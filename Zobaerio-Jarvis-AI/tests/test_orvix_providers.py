@@ -1,4 +1,4 @@
-"""Tests for jarvis.orvix.providers / router.
+"""Tests for orvix.providers / router.
 
 The fake transport below is a TEST DOUBLE at the HTTP boundary only; it is
 never used by production code paths, which always call the real provider
@@ -11,8 +11,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from jarvis.orvix.providers import PROVIDERS, ProviderClient, ProviderNotConfigured, build_clients, configured_providers
-from jarvis.orvix.router import BudgetTracker, HealthMonitor, Orchestrator, Router, classify_task, complexity_score
+from orvix.providers import PROVIDERS, ProviderClient, ProviderNotConfigured, build_clients, configured_providers
+from orvix.router import BudgetTracker, HealthMonitor, Orchestrator, Router, classify_task, complexity_score
 
 
 def fake_transport_factory(responder):
@@ -132,7 +132,7 @@ class OrchestratorTests(unittest.TestCase):
         self.assertEqual(res.provider, "anthropic")
 
     def test_no_provider_configured_is_honest(self):
-        from jarvis.orvix.router import NoProviderConfigured
+        from orvix.router import NoProviderConfigured
         clients = build_clients(env={}, transport=fake_transport_factory(openai_ok))
         # ollama is keyless-configured; make it unhealthy so nothing is available
         orch = Orchestrator(clients=clients, budget=BudgetTracker(limit_usd=10))
@@ -142,7 +142,7 @@ class OrchestratorTests(unittest.TestCase):
             orch.complete("hi", task_type="chat")
 
     def test_budget_never_silently_exceeded(self):
-        from jarvis.orvix.router import BudgetExceeded
+        from orvix.router import BudgetExceeded
         budget = BudgetTracker(limit_usd=0.001)
         budget.record(0.0009)
         with self.assertRaises(BudgetExceeded):

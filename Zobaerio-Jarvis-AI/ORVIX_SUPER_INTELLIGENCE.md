@@ -2,7 +2,7 @@
 
 Added 2026-11-15 on top of the existing desktop assistant (nothing replaced;
 all pre-existing features and their 314 tests are unchanged). New code lives
-in `jarvis/orvix/` and uses only the Python standard library.
+in `orvix/` and uses only the Python standard library.
 
 ## Architecture (Brain Architecture from the spec)
 
@@ -30,9 +30,9 @@ false "100% complete").
 ## Usage
 
 ```
-python -m jarvis.orvix status
-python -m jarvis.orvix dashboard control_center.html
-python -m jarvis.orvix ask "Research vector databases and compare the top options"
+python -m orvix status
+python -m orvix dashboard control_center.html
+python -m orvix ask "Research vector databases and compare the top options"
 ```
 
 Set at least one provider key first (`.env.example` lists them), or run a

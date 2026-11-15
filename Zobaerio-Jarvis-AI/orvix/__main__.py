@@ -1,12 +1,12 @@
 """CLI for the ORVIX Super Intelligence layer.
 
 Usage:
-  python -m jarvis.orvix status              # JSON snapshot of agents/models/tasks/budget
-  python -m jarvis.orvix dashboard out.html  # write the Control Center HTML page
-  python -m jarvis.orvix ask "your command"  # run a command through the Chief Intelligence Agent
+  python -m orvix status              # JSON snapshot of agents/models/tasks/budget
+  python -m orvix dashboard out.html  # write the Control Center HTML page
+  python -m orvix ask "your command"  # run a command through the Chief Intelligence Agent
 
 Without a configured provider, `ask` honestly reports blocked steps and the
-exact configuration that is missing. Data files live under the app's APP_DIR
+exact configuration that is missing. Data files live under ~/.orvix
 unless ORVIX_DATA_DIR is set.
 """
 from __future__ import annotations
@@ -21,11 +21,7 @@ def _data_dir() -> Path:
     raw = os.environ.get("ORVIX_DATA_DIR")
     if raw:
         return Path(raw)
-    try:
-        from ..settings import APP_DIR
-        return Path(APP_DIR) / "orvix"
-    except Exception:
-        return Path.home() / ".orvix"
+    return Path.home() / ".orvix"
 
 
 def main(argv: list[str]) -> int:
@@ -52,7 +48,7 @@ def main(argv: list[str]) -> int:
         return 0
     if cmd == "ask":
         if len(argv) < 3:
-            print('usage: python -m jarvis.orvix ask "your command"')
+            print('usage: python -m orvix ask "your command"')
             return 2
         from .agents import ChiefIntelligenceAgent
         chief = ChiefIntelligenceAgent(orchestrator=Orchestrator(budget=budget),

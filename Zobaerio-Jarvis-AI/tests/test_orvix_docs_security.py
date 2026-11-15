@@ -1,10 +1,10 @@
 import io, json, sys, tempfile, unittest, zipfile
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from jarvis.orvix import documents
-from jarvis.orvix.control_center import build_snapshot, render_html
-from jarvis.orvix.research import research
-from jarvis.orvix.security import AuditLog, ConfirmationGate, ConfirmationRequired, RateLimiter, redact
+from orvix import documents
+from orvix.control_center import build_snapshot, render_html
+from orvix.research import research
+from orvix.security import AuditLog, ConfirmationGate, ConfirmationRequired, RateLimiter, redact
 
 def tmpdir():
     return Path(tempfile.mkdtemp())
@@ -89,7 +89,7 @@ class SecurityTests(unittest.TestCase):
 
 class ResearchTests(unittest.TestCase):
     def test_research_labels_single_source_uncertain(self):
-        import jarvis.orvix.research as research_mod
+        import orvix.research as research_mod
         original = research_mod.fetch_url
         class FakeSource:
             def __init__(self, url, text):
