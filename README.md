@@ -1,6 +1,6 @@
 # ORVIX AI Desktop Assistant — Windows 11
 
-**Latest source:** `Zobaerio-Jarvis-AI/`  
+**Latest source:** `Orvix-AI/`  
 **Version:** 1.7.3 — bounded voice timeouts  
 **Repository:** https://github.com/zobaerio/orvixai
 
@@ -17,7 +17,7 @@
 
 If the Releases page has no installer yet, the release has not been published. A temporary CI build may be available under Actions → a successful Windows Installer Package run → Artifacts, but CI artifacts expire. Use Releases for the permanent download.
 
-The latest readable source tree is committed under `Zobaerio-Jarvis-AI/`. Download/clone this repository, then open that folder and run `install.bat` followed by `run.bat`. Use Python 3.12.x 64-bit on Windows 11.
+The latest readable source tree is committed under `Orvix-AI/`. Download/clone this repository, then open that folder and run `install.bat` followed by `run.bat`. Use Python 3.12.x 64-bit on Windows 11.
 
 ## New in v1.2.3
 - A **OPEN REAL 3D AVATAR STUDIO** button in the desktop dashboard.
@@ -53,15 +53,15 @@ The AI agent can inspect visible window titles (not their contents), paste text 
 
 ## Branding and responsive UI
 
-The official SVG mark and wordmark are in `Zobaerio-Jarvis-AI/assets/branding/`. The installer generates a PNG and multi-size Windows ICO with Pillow, then assigns the ICO to the Desktop shortcut. The app uses the same logo in the header/title bar. The desktop window can shrink to 820×560; the right-side utility rail and decorative top nav collapse at narrower widths. The Flutter mobile client is available as an Android debug build through GitHub Actions; it is not yet a signed production release and does not provide full Windows desktop-agent parity.
+The official SVG mark and wordmark are in `Orvix-AI/assets/branding/`. The installer generates a PNG and multi-size Windows ICO with Pillow, then assigns the ICO to the Desktop shortcut. The app uses the same logo in the header/title bar. The desktop window can shrink to 820×560; the right-side utility rail and decorative top nav collapse at narrower widths. The Flutter mobile client is available as an Android debug build through GitHub Actions; it is not yet a signed production release and does not provide full Windows desktop-agent parity.
 
 ## Guides
-- [Bengali installation guide](Zobaerio-Jarvis-AI/README_BN.md)
-- [Feature status and roadmap](Zobaerio-Jarvis-AI/FEATURE_STATUS.md)
-- [3D character generation and rigging guide (Bangla)](Zobaerio-Jarvis-AI/3D_CHARACTER_PIPELINE_BN.md)
+- [Bengali installation guide](Orvix-AI/README_BN.md)
+- [Feature status and roadmap](Orvix-AI/FEATURE_STATUS.md)
+- [3D character generation and rigging guide (Bangla)](Orvix-AI/3D_CHARACTER_PIPELINE_BN.md)
 
 ## Install and test
-1. Download this repository (or clone it) and open `Zobaerio-Jarvis-AI/`.
+1. Download this repository (or clone it) and open `Orvix-AI/`.
 2. Install [Python 3.12.10 64-bit](https://www.python.org/downloads/release/python-31210/).
 3. Run `install.bat`, then `run.bat`.
 4. Click **OPEN REAL 3D AVATAR STUDIO** and then **IMPORT RIGGED .GLB** to load your own model.
@@ -83,7 +83,7 @@ Unexpected tool/worker errors show a bounded exception type and next-step guidan
 
 ## Windows portable build
 
-A reproducible PyInstaller one-folder build is defined in `Zobaerio-Jarvis-AI/ORVIX.spec` and `build_portable.bat`. On Windows with Python 3.12 x64, run `install.bat` only if you want the source-based setup; to create a portable package, open `Zobaerio-Jarvis-AI` and run `build_portable.bat`. The output is `dist/ORVIX-Windows-Portable.zip`. GitHub Actions also builds this ZIP on Windows and uploads it as a 14-day workflow artifact. This is an **unsigned** portable build, not a signed installer/MSIX. Online AI endpoints, speech services, and the 3D viewer's Three.js CDN still require their respective connectivity; this does not make the app fully offline.
+A reproducible PyInstaller one-folder build is defined in `Orvix-AI/ORVIX.spec` and `build_portable.bat`. On Windows with Python 3.12 x64, run `install.bat` only if you want the source-based setup; to create a portable package, open `Orvix-AI` and run `build_portable.bat`. The output is `dist/ORVIX-Windows-Portable.zip`. GitHub Actions also builds this ZIP on Windows and uploads it as a 14-day workflow artifact. This is an **unsigned** portable build, not a signed installer/MSIX. Online AI endpoints, speech services, and the 3D viewer's Three.js CDN still require their respective connectivity; this does not make the app fully offline.
 
 
 ## Voice reliability
@@ -140,7 +140,7 @@ For everyday installation, first check the [Releases page](https://github.com/zo
 
 #### Option C — Run from source
 1. Download the [repository ZIP](https://github.com/zobaerio/orvixai/archive/refs/heads/main.zip) or clone the repository.
-2. Open the `Zobaerio-Jarvis-AI/` folder.
+2. Open the `Orvix-AI/` folder.
 3. Install [Python 3.12.x for Windows](https://www.python.org/downloads/).
 4. Run `install.bat`, then `run.bat`.
 
@@ -154,7 +154,7 @@ For everyday installation, first check the [Releases page](https://github.com/zo
 
 1. Open the [Mobile Build workflow](https://github.com/zobaerio/orvixai/actions/workflows/mobile-build.yml).
 2. Open the newest run marked **Success** and look for the **Android debug APK** job.
-3. Scroll to **Artifacts** and download `jarvis-mobile-android-debug` (ZIP).
+3. Scroll to **Artifacts** and download `orvix-mobile-android-debug` (ZIP).
 4. On your Android device, extract the ZIP using the Files app or another archive app.
 5. Open the extracted folder and tap `app-debug.apk`.
 6. If Android asks, allow **Install unknown apps** only for the specific file manager or browser you used. Return to the APK and tap **Install**.
