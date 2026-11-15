@@ -125,9 +125,9 @@ class HealthMonitor:
 
 class Router:
     def rank(self, task_type: str, complexity: float, *, configured: dict[str, bool],
-             health: HealthMonitor, budget_remaining: Optional[float]) -> list[ModelInfo]:
+             health: HealthMonitor, budget_remaining: Optional[float], models=None) -> list[ModelInfo]:
         scored = []
-        for info in ALL_MODELS:
+        for info in (ALL_MODELS if models is None else models):
             if not configured.get(info.provider, False):
                 continue
             if not health.healthy(info.provider):
@@ -165,12 +165,13 @@ class Orchestrator:
 
     def __init__(self, clients: Optional[dict[str, ProviderClient]] = None,
                  budget: Optional[BudgetTracker] = None, health: Optional[HealthMonitor] = None,
-                 max_retries: int = 2, env: Optional[dict] = None):
+                 max_retries: int = 2, env: Optional[dict] = None, extra_models: tuple = ()):
         self.clients = clients or build_clients(env=env)
         self.budget = budget or BudgetTracker()
         self.health = health or HealthMonitor()
         self.router = Router()
         self.max_retries = max_retries
+        self.models = tuple(ALL_MODELS) + tuple(extra_models)
 
     def _configured(self) -> dict[str, bool]:
         return {name: c.configured for name, c in self.clients.items()}
@@ -180,7 +181,7 @@ class Orchestrator:
         task_type = task_type or classify_task(prompt)
         complexity = complexity_score(prompt)
         candidates = self.router.rank(task_type, complexity, configured=self._configured(),
-                                      health=self.health, budget_remaining=self.budget.remaining())
+                                      health=self.health, budget_remaining=self.budget.remaining(), models=self.models)
         if not candidates:
             needed = ", ".join(sorted({s for s in
                                         ("OPENAI_API_KEY", "ANTHROPIC_API_KEY", "GEMINI_API_KEY", "DEEPSEEK_API_KEY",
@@ -225,7 +226,7 @@ class Orchestrator:
     def _verify(self, result: OrchestrationResult, original_prompt: str):
         """Cross-model verification: a *different* provider checks the answer."""
         others = [c for c in self.router.rank("verification", 0.5, configured=self._configured(),
-                                              health=self.health, budget_remaining=self.budget.remaining())
+                                              health=self.health, budget_remaining=self.budget.remaining(), models=self.models)
                   if c.provider != result.provider]
         if not others:
             return
@@ -254,7 +255,7 @@ class Orchestrator:
             return primary
         configured = self._configured()
         others = [c for c in self.router.rank(classify_task(prompt), 0.7, configured=configured,
-                                              health=self.health, budget_remaining=self.budget.remaining())
+                                              health=self.health, budget_remaining=self.budget.remaining(), models=self.models)
                   if c.provider != primary.provider][: max_models - 1]
         reviews = []
         for info in others:

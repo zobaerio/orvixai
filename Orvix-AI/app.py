@@ -30,6 +30,7 @@ from orvix.home_data import (
     format_uptime, gauge_color, gauge_extent_deg, model_status_lines,
     performance_caption, quick_action_tiles,
 )
+from orvix.app_bridge import DesktopOutcome, app_brain_configured, build_app_chief, format_brain_result, map_brain_status, route_decision, run_brain_command
 from orvix.control_center import build_snapshot as _build_control_center_snapshot
 from orvix.taskqueue import TaskQueue
 from orvix.router import BudgetTracker
@@ -1614,25 +1615,59 @@ class OrvixDesktop:
         raw = os.environ.get("ORVIX_DATA_DIR")
         return Path(raw) if raw else Path.home() / ".orvix"
 
+    def _shared_orvix_state(self):
+        """Lazily build + cache the shared ORVIX state objects."""
+        if getattr(self, "_hud_cc_objects", None) is None:
+            data = self._hud_data_dir()
+            data.mkdir(parents=True, exist_ok=True)
+            self._hud_cc_objects = (
+                TaskQueue(data / "task_queue.db"),
+                BudgetTracker(path=data / "budget.json"),
+                AuditLog(data / "audit.jsonl"),
+                MemoryStore(data / "memory.json"),
+                LessonLog(data / "lessons.json"),
+            )
+        return self._hud_cc_objects
+
     def _hud_control_center_snapshot(self) -> dict | None:
         """Real Control Center snapshot over the shared data dir (the
         same task queue / budget / audit files the CLI and Chief use).
         Returns None when the snapshot cannot be built."""
         try:
-            if getattr(self, "_hud_cc_objects", None) is None:
-                data = self._hud_data_dir()
-                data.mkdir(parents=True, exist_ok=True)
-                self._hud_cc_objects = (
-                    TaskQueue(data / "task_queue.db"),
-                    BudgetTracker(path=data / "budget.json"),
-                    AuditLog(data / "audit.jsonl"),
-                    MemoryStore(data / "memory.json"),
-                    LessonLog(data / "lessons.json"),
-                )
-            queue, budget, audit, _memory, _lessons = self._hud_cc_objects
+            queue, budget, audit, _memory, _lessons = self._shared_orvix_state()
             return _build_control_center_snapshot(queue=queue, budget=budget, audit_log=audit)
         except Exception:
             return None
+
+    def _brain_desktop_execute(self, step_text: str, task_id: str | None, cancel_event: threading.Event) -> DesktopOutcome:
+        text = self.agent.respond(
+            step_text,
+            cancel_event=cancel_event,
+            progress=lambda s: self._record_task_step(task_id, s),
+            tool_event=lambda name, st, aid, note: self._record_tool_action(task_id, name, st, aid, note),
+        )
+        outcome = getattr(self.agent, "last_outcome", "completed")
+        return DesktopOutcome(ok=outcome in ("completed", "partial"), text=text)
+
+    def _run_brain_task(self, text: str, task_id: str | None, cancel_event: threading.Event) -> tuple[str, str]:
+        queue, budget, audit, _memory, lessons = self._shared_orvix_state()
+        chief = build_app_chief(
+            self.settings,
+            get_api_key(),
+            queue=queue,
+            budget=budget,
+            audit_log=audit,
+            lesson_log=lessons,
+            desktop_execute=lambda step_text: self._brain_desktop_execute(step_text, task_id, cancel_event),
+            confirmer=lambda action, category: self._request_approval(
+                "Autonomous Brain — confirmation",
+                f"The Autonomous Brain wants to run a {category} desktop step:\n\n{action}\n\nAllow it? (Each file/app action will still ask for its own approval.)",
+            ),
+            on_step=lambda step, phase: self._record_task_step(task_id, f"Brain · {step.agent}: {step.title} — {phase}"),
+            is_cancelled=cancel_event.is_set,
+        )
+        outcome = run_brain_command(chief, text, queue=queue, is_cancelled=cancel_event.is_set)
+        return format_brain_result(outcome), map_brain_status(outcome["status"])
 
     def _update_hud_panel_labels(self) -> None:
         """Rebuild the HUD panel lines from real state and apply them.
@@ -2630,10 +2665,25 @@ class OrvixDesktop:
                         task_id,
                         "Resuming the saved plan explicitly; completed steps will not be replayed",
                     )
+        brain_decision = "legacy"
+        if not cancel_event.is_set():
+            try:
+                brain_decision = route_decision(self.settings, get_api_key(), text, should_generate_task_plan)
+            except Exception:
+                brain_decision = "legacy"
+        if brain_decision == "brain_unconfigured":
+            _configured, _reason = app_brain_configured(self.settings, get_api_key())
+            self._record_task_step(task_id, f"Autonomous Brain is ON but not configured: {_reason}; using the normal assistant")
+            try:
+                self.events.put((self._write_message, ("SYSTEM", f"Autonomous Brain is ON, but it is not configured: {_reason}. This command was handled by the normal assistant instead.", "system")))
+            except Exception:
+                pass
+            brain_decision = "legacy"
         # Planning is side-effect-free. When persisted successfully, each step is executed
         # in a separate bounded agent turn; an unverified state-changing action stops the plan.
         if (
             task_id
+            and brain_decision != "brain"
             and not resume_existing_plan
             and not cancel_event.is_set()
             and should_generate_task_plan(text)
@@ -2668,7 +2718,9 @@ class OrvixDesktop:
             result = "Task cancelled before execution began. No AI tool actions were started."
         else:
             try:
-                if task_id and plan_titles and isinstance(saved_plan, dict) and isinstance(saved_plan.get("plan"), list):
+                if brain_decision == "brain":
+                    result, planned_status = self._run_brain_task(text, task_id, cancel_event)
+                elif task_id and plan_titles and isinstance(saved_plan, dict) and isinstance(saved_plan.get("plan"), list):
                     self._record_task_step(
                         task_id,
                         "Executing the persisted plan step by step under one shared tool-action budget",
@@ -3016,7 +3068,7 @@ class OrvixDesktop:
         pad = tk.Frame(win, bg=BG)
         pad.pack(fill="both", expand=True, padx=24, pady=22)
         tk.Label(pad, text="AI & Voice Settings", bg=BG, fg=TEXT, font=("Segoe UI Semibold", 18, "bold")).pack(anchor="w")
-        tk.Label(pad, text="Local Ollama or any OpenAI-compatible API endpoint can be used.", bg=BG, fg=MUTED, font=("Segoe UI", 9)).pack(anchor="w", pady=(5, 16))
+        tk.Label(pad, text="Local Ollama or any OpenAI-compatible API endpoint can be used.", bg=BG, fg=MUTED, font=("Segoe UI", 9)).pack(anchor="w", pady=(5, 10))
 
         variables: dict[str, tk.StringVar] = {}
         fields = [
@@ -3153,7 +3205,7 @@ class OrvixDesktop:
         voice_combo.pack(fill="x")
 
         speak_var = tk.BooleanVar(value=bool(self.settings.get("speak_replies", True)))
-        tk.Checkbutton(pad, text="Speak assistant replies aloud (internet required for neural voice)", variable=speak_var, bg=BG, fg=TEXT, activebackground=BG, activeforeground=TEXT, selectcolor=CARD, font=("Segoe UI", 9)).pack(anchor="w", pady=(10, 12))
+        tk.Checkbutton(pad, text="Speak assistant replies aloud (internet required for neural voice)", variable=speak_var, bg=BG, fg=TEXT, activebackground=BG, activeforeground=TEXT, selectcolor=CARD, font=("Segoe UI", 9)).pack(anchor="w", pady=(10, 6))
 
         startup_var = tk.BooleanVar(value=is_windows_startup_enabled())
         tk.Checkbutton(
@@ -3162,6 +3214,19 @@ class OrvixDesktop:
             variable=startup_var, bg=BG, fg=TEXT, activebackground=BG,
             activeforeground=TEXT, selectcolor=CARD, font=("Segoe UI", 9),
         ).pack(anchor="w", pady=(0, 10))
+
+        brain_var = tk.BooleanVar(value=bool(self.settings.get("autonomous_brain", False)))
+        tk.Checkbutton(
+            pad,
+            text="Autonomous Brain (multi-agent) for complex commands",
+            variable=brain_var, bg=BG, fg=TEXT, activebackground=BG,
+            activeforeground=TEXT, selectcolor=CARD, font=("Segoe UI", 9),
+        ).pack(anchor="w", pady=(0, 2))
+        tk.Label(
+            pad,
+            text="When on, complex multi-step commands are planned and run by the Chief Intelligence Agent and its specialised agents using the endpoint above. Simple commands are unchanged. Desktop actions still ask for approval. Off by default.",
+            bg=BG, fg=MUTED, font=("Segoe UI", 8), wraplength=540, justify="left",
+        ).pack(fill="x", pady=(0, 6))
 
         connection_status = tk.Label(
             pad, text="Connection not tested yet.", bg=BG, fg=MUTED,
@@ -3215,6 +3280,7 @@ class OrvixDesktop:
             new["speech_language"] = lang_var.get()
             new["voice"] = voice_var.get()
             new["speak_replies"] = speak_var.get()
+            new["autonomous_brain"] = bool(brain_var.get())
             try:
                 new["api_base_url"] = validate_api_base_url(new["api_base_url"])
                 if not new["model"]:

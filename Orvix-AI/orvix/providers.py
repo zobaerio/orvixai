@@ -224,5 +224,29 @@ class ProviderClient:
             return False
 
 
+APP_PROVIDER_NAME = "app"
+APP_CAPABILITIES = frozenset({"chat", "reasoning", "coding", "research", "document", "planning", "verification"})
+
+
+def build_app_client(base_url, model, api_key=None, *, transport=None, timeout=60.0):
+    """Build a ProviderClient + ModelInfo for the desktop app's endpoint.
+
+    The app configures a single OpenAI-compatible endpoint (base URL +
+    model in settings, key from the OS keyring). This adapts that single
+    configuration into the provider registry shape without duplicating
+    configuration or reading environment variables.
+
+    Cost is 0.0 because a custom endpoint's pricing is unknown: the
+    budget tracker still counts the call, but dollar estimates exist
+    only for registry models with published prices.
+    """
+    cleaned = str(base_url or "").strip().rstrip("/")
+    model_name = str(model or "").strip()
+    info = ModelInfo(APP_PROVIDER_NAME, model_name, APP_CAPABILITIES, 0.0, 2, 128000)
+    spec = ProviderSpec(APP_PROVIDER_NAME, None, cleaned, "openai", (info,))
+    client = ProviderClient(spec, api_key=api_key, transport=transport, timeout=timeout)
+    return client, info
+
+
 def build_clients(env: Optional[dict] = None, transport: Optional[Transport] = None) -> dict[str, ProviderClient]:
     return {name: ProviderClient(spec, transport=transport, env=env) for name, spec in PROVIDERS.items()}

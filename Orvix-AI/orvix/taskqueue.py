@@ -113,6 +113,22 @@ class TaskQueue:
         else:
             self._set(task_id, status="failed", error=error[:2000])
 
+    def start(self, task_id: str) -> bool:
+        task = self.get(task_id)
+        if task and task["status"] == "pending":
+            self._set(task_id, status="running", attempts=task["attempts"] + 1)
+            return True
+        return False
+
+    def finish(self, task_id: str, status: str, result: str = "", error: str = "") -> bool:
+        if status not in STATUSES or status in ("pending", "running"):
+            raise ValueError(f"finish status must be a terminal status, got {status!r}")
+        task = self.get(task_id)
+        if not task:
+            return False
+        self._set(task_id, status=status, result=result[:20000], error=error[:2000])
+        return True
+
     def pause(self, task_id: str):
         task = self.get(task_id)
         if task and task["status"] in ("pending", "running"):

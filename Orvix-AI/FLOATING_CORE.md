@@ -81,25 +81,64 @@ features; the mic control remains under the hero core in the composer
   precomputed per size, and frame `dt` is clamped so a stalled UI
   cannot make the animation jump.
 
-## App → Chief brain wiring: deliberately NOT done in this unit
+## App → Chief brain wiring
 
-Routing home-screen commands through the Super Intelligence Chief
-(`orvix/agents.py`) was assessed and skipped, for a concrete reason:
-the desktop app's provider configuration lives in its own settings +
-OS keyring and speaks to one OpenAI-compatible endpoint
-(`orvix/agent.py`), while the Chief's `Orchestrator` resolves
-providers from environment variables against its own registry
-(`orvix/router.py`). There is no supported way to inject the app's
-configured endpoint/key into the Orchestrator, and the Chief's agents
-do not have the desktop toolset (28 automation tools, planner,
-approval gates) that the app agent has. Bolting them together here
-would either duplicate provider configuration or silently change
-chat behaviour. The safe bridge is a small follow-up: construct the
-Orchestrator from the app settings (base URL + keyring key) behind
-the existing "provider configured" check, with fallback to the app
-agent when unconfigured. The core's states already reflect whichever
-backend runs the task, because they are driven by the task/voice
-lifecycle, not by a specific engine.
+Floating Core + Voice + Autonomous Brain now share ONE backend
+intelligence. The bridge lives in `orvix/app_bridge.py` (no tkinter
+import, fully unit-tested headless); `app.py` only calls it.
+
+- **Single config source**: `build_app_client` in
+  `orvix/providers.py` builds a provider client from the app settings
+  (base URL + model) plus the keyring key, injected into the
+  Orchestrator as the extra `app` provider model. No env duplication;
+  the key is never logged or written. Env-configured registry
+  providers remain available alongside it.
+- **Opt-in toggle, default OFF**: Settings → "Autonomous Brain
+  (multi-agent) for complex commands" (`autonomous_brain` in
+  `orvix/settings.py` DEFAULTS, default `False`). Routing rule:
+  `route_decision` sends a command to the Brain only when the toggle
+  is on AND the existing `should_generate_task_plan` classifier says
+  it is complex. Simple commands are unchanged, and voice commands
+  route through the same point (`_voice_captured` → `_send_text` →
+  `_launch_task` → `_work`).
+- **Step surfacing**: Brain steps are reported through the existing
+  `_record_task_step` (activity feed + task progress), so the core
+  states follow the existing lifecycle (EXECUTING while steps run,
+  COMPLETED / ERROR from the mapped Brain status in
+  `_finish_response`).
+- **Tool bridge**: `BridgedAgent` routes a step by kind — desktop-
+  action steps (conservative `classify_desktop_action` heuristic) go
+  to `OrvixAgent.respond` with all its approval gates intact;
+  sensitive steps are pre-checked by `ConfirmationGate` fail-closed
+  (no gate / no approval = blocked, the desktop executor is never
+  called); document steps (`document_text` context) go to the
+  layer's documents tools via the base agent; research / chat /
+  reasoning / coding / verification steps go to the Orchestrator
+  (app endpoint plus any env providers).
+- **Honest degradation**: when the Brain is on but not configured
+  (`brain_unconfigured` — empty endpoint/model, key-over-plain-HTTP
+  to a remote endpoint, or a remote endpoint with no key), `_work`
+  posts a SYSTEM note naming the reason and handles the command with
+  the normal assistant instead. No fake Brain responses.
+- **Budget**: the shared `BudgetTracker` over `~/.orvix/budget.json`
+  counts app-endpoint calls at $0 estimated cost — a custom
+  endpoint's pricing is unknown, so dollar estimates exist only for
+  registry models with published prices. The `ORVIX_BUDGET_USD` cap
+  still applies to priced calls.
+- **Shared state**: the Brain uses the same TaskQueue / AuditLog /
+  LessonLog / Budget files as the CLI and the HUD panel (via the
+  extracted `_shared_orvix_state()` in app.py), so
+  `python -m orvix status` and the HUD Control Center panel reflect
+  app Brain tasks. The queue has no "partial" status, so partial
+  runs are recorded as completed in the queue with the true status
+  carried in the formatted result text.
+- **Honest limits**: (1) No mid-call cancellation of an in-flight
+  provider request — cancellation is checked between steps, the
+  same cooperative model as the existing agent. (2) The desktop
+  classifier is a conservative heuristic — a step it misses is
+  answered by the assigned agent via the model without desktop
+  tools. (3) The app endpoint is one OpenAI-compatible endpoint —
+  non-OpenAI-shaped endpoints are not adapted.
 
 ## Small overlay orb (mini mode)
 
