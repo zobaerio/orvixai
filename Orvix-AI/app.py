@@ -633,17 +633,21 @@ class OrvixDesktop:
         if hasattr(self, "hud_stat_labels"):
             self._update_hud_panel_labels()
 
-    def _core_audio_level(self) -> None:
+    def _core_audio_level(self) -> float | None:
         """Audio level source for the core's LISTENING/SPEAKING states.
 
-        SpeechEngine exposes no live level: speech_recognition does not
-        report microphone RMS and pygame playback does not report an
-        output level. Returning None is deliberate — the hook is wired
-        so a future level-capable engine can be dropped in here, and
-        until then the core uses its state-driven pulse instead of
-        fabricated audio data.
+        The SpeechEngine now measures real levels: microphone RMS from
+        the capture stream while listening (VAD capture path, or the
+        level tap on the classic listener), and the decoded playback
+        envelope while the neural voice is speaking. When no live
+        source exists (idle, pyttsx3 fallback, envelope unavailable)
+        the engine returns None and the core uses its state-driven
+        pulse — a level is still never fabricated. See FLOATING_CORE.md.
         """
-        return None
+        try:
+            return self.speech.current_level()
+        except Exception:
+            return None
 
     def _core_after_speech(self) -> None:
         """Return the core to IDLE when speech playback has ended."""
@@ -1541,8 +1545,9 @@ class OrvixDesktop:
     def _draw_voice_wave(self) -> None:
         """Waveform strip in the Voice Control panel. Same decorative,
         state-independent animation the hero canvas has always drawn —
-        it is a UI motion element, not an audio measurement (the app
-        has no live level source; see _core_audio_level)."""
+        it is a UI motion element, not an audio measurement (the
+        floating core is what renders the live level; see
+        _core_audio_level)."""
         canvas = getattr(self, "wave_canvas", None)
         if canvas is None:
             return
@@ -2810,23 +2815,41 @@ class OrvixDesktop:
     def _speak_safely(self, text: str, continue_queue: bool = False) -> None:
         # Avoid speaking long file listings or raw provider error dumps.
         self._speech_active.set()
+        barged_in = False
         try:
             if len(text) <= 1600 and not text.startswith("AI provider error"):
                 try:
                     self.root.after(0, self._set_core_state, CoreState.SPEAKING)
                 except tk.TclError:
                     pass
-                self.speech.speak(text, str(self.settings.get("voice", "bn-BD-PradeepNeural")))
+                self.speech.speak(
+                    text,
+                    str(self.settings.get("voice", "bn-BD-PradeepNeural")),
+                    barge_in=bool(self.settings.get("voice_barge_in", True)),
+                )
+                barged_in = self.speech.consume_barge_in()
         finally:
             self._speech_active.clear()
             try:
                 self.root.after(0, self._core_after_speech)
-                if continue_queue and self._queue_armed:
+                if barged_in:
+                    # The user interrupted the reply by speaking:
+                    # listen to them instead of resuming the queue or
+                    # the wake-word loop (the listen flow re-arms both).
+                    self.root.after(150, self._barge_in_listen)
+                elif continue_queue and self._queue_armed:
                     self.root.after(150, self._start_next_queued_task)
                 elif self.wake_enabled:
                     self.root.after(500, self._start_wake_listener)
             except tk.TclError:
                 pass
+
+    def _barge_in_listen(self) -> None:
+        """Barge-in: playback was interrupted — capture the interruption."""
+        if self._busy:
+            return
+        self._write_message("SYSTEM", "Interrupted — listening.", "system")
+        self._listen()
 
     def _listen(self) -> None:
         if self._busy:
@@ -2839,7 +2862,10 @@ class OrvixDesktop:
 
     def _listen_worker(self) -> None:
         try:
-            text = self.speech.listen_once(str(self.settings.get("speech_language", "bn-BD")))
+            text = self.speech.listen_once(
+                str(self.settings.get("speech_language", "bn-BD")),
+                vad_enabled=bool(self.settings.get("voice_vad_enabled", True)),
+            )
             self.root.after(0, self._voice_captured, text)
         except Exception as exc:
             self.root.after(0, self._voice_failed, str(exc))
@@ -2917,7 +2943,10 @@ class OrvixDesktop:
                 time.sleep(0.25)
                 continue
             try:
-                heard = self.speech.listen_once(str(self.settings.get("speech_language", "bn-BD")))
+                heard = self.speech.listen_once(
+                    str(self.settings.get("speech_language", "bn-BD")),
+                    vad_enabled=bool(self.settings.get("voice_vad_enabled", True)),
+                )
             except Exception as exc:
                 message = str(exc)
                 if "No usable microphone" in message or "not installed" in message:
@@ -3247,6 +3276,25 @@ class OrvixDesktop:
             text="The HTML home mirrors this console: same commands, same brain, live system data. If the WebView component is unavailable, ORVIX opens this console window exactly as before. Takes effect next launch; ORVIX_WEBVIEW_HOME=0 forces the console.",
             bg=BG, fg=MUTED, font=("Segoe UI", 8), wraplength=540, justify="left",
         ).pack(fill="x", pady=(0, 6))
+        vad_var = tk.BooleanVar(value=bool(self.settings.get("voice_vad_enabled", True)))
+        tk.Checkbutton(
+            pad,
+            text="Voice activity detection — listening starts/stops with your speech",
+            variable=vad_var, bg=BG, fg=TEXT, activebackground=BG,
+            activeforeground=TEXT, selectcolor=CARD, font=("Segoe UI", 9),
+        ).pack(anchor="w", pady=(0, 2))
+        barge_var = tk.BooleanVar(value=bool(self.settings.get("voice_barge_in", True)))
+        tk.Checkbutton(
+            pad,
+            text="Barge-in — interrupt a spoken reply by speaking (neural voice)",
+            variable=barge_var, bg=BG, fg=TEXT, activebackground=BG,
+            activeforeground=TEXT, selectcolor=CARD, font=("Segoe UI", 9),
+        ).pack(anchor="w", pady=(0, 2))
+        tk.Label(
+            pad,
+            text="Voice activity detection segments speech on this PC and falls back to the classic listener automatically if capture fails. Barge-in monitors the microphone while ORVIX speaks; speaker echo can mask it, so headphones work best. The offline fallback voice cannot be interrupted.",
+            bg=BG, fg=MUTED, font=("Segoe UI", 8), wraplength=540, justify="left",
+        ).pack(fill="x", pady=(0, 6))
 
         connection_status = tk.Label(
             pad, text="Connection not tested yet.", bg=BG, fg=MUTED,
@@ -3302,6 +3350,8 @@ class OrvixDesktop:
             new["speak_replies"] = speak_var.get()
             new["autonomous_brain"] = bool(brain_var.get())
             new["webview_home"] = bool(webview_var.get())
+            new["voice_vad_enabled"] = bool(vad_var.get())
+            new["voice_barge_in"] = bool(barge_var.get())
             try:
                 new["api_base_url"] = validate_api_base_url(new["api_base_url"])
                 if not new["model"]:
