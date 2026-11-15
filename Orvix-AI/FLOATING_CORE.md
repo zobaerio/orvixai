@@ -46,18 +46,64 @@ driven by the same bridge, so the floating window and the main window
 always show the same backend state — the same intelligence the chat,
 planner and task executor run on.
 
-## Audio level — honest status
+## Audio level — real since the continuous-voice unit
 
 `FloatingCoreWidget.set_level_provider()` is wired in app.py to
-`OrvixDesktop._core_audio_level()`. The existing `SpeechEngine`
-exposes **no live level**: `speech_recognition` reports no microphone
-RMS during capture and pygame reports no output level during
-playback. The provider therefore returns `None` today, and
-LISTENING/SPEAKING use their state-driven pulse — an animation
-parameter, **not** fabricated audio data. If a level-capable engine
-(RMS tap on the capture stream / playback meter) is added later, it
-only has to be returned from `_core_audio_level()`; the smoothing and
-modulation math is already in place and tested.
+`OrvixDesktop._core_audio_level()`, which now returns
+`SpeechEngine.current_level()` — real measured audio, not an
+animation parameter:
+
+- **LISTENING** — per-chunk RMS (normalised 0..1, smoothed by
+  `orvix/audio_levels.LevelMeter`) computed from the *same* frames
+  the recogniser consumes: on the VAD capture path the frames are
+  read by the engine itself; on the classic path a read tap wraps
+  the `sr.Microphone` stream. No second microphone stream is opened.
+  The meter goes stale (returns `None`) 0.4 s after the last frame,
+  so an idle core never shows a frozen, fabricated level.
+- **SPEAKING** — the synthesised MP3 is decoded once before playback
+  (`pygame.mixer.Sound` + `pygame.sndarray`) into a per-100 ms
+  `PlaybackEnvelope`; the level is the real loudness of the reply at
+  the current playback position. pygame has no output meter — this
+  is the honest substitute, derived from the actual audio file.
+
+What is still **not** real, deliberately: if the envelope cannot be
+decoded (codec/numpy unavailable), SPEAKING falls back to the
+state-driven pulse and `current_level()` returns `None` rather than
+inventing a level. The pyttsx3 offline fallback voice has no audio
+file and no meter at all — its SPEAKING state is state-driven.
+
+## Continuous voice — VAD + barge-in
+
+Settings (Settings dialog, both default ON, both fail-safe —
+any failure degrades to the previous behaviour and never breaks the
+voice loop): `voice_vad_enabled`, `voice_barge_in`.
+
+- **VAD segmentation** (`orvix/vad.py`): the engine captures through
+  its own PyAudio stream; an energy VAD with an adaptive noise floor
+  starts an utterance after 90 ms of sustained above-threshold level
+  and ends it after 700 ms of silence (12 s cap, 300 ms pre-roll so
+  the first syllable is not clipped, <250 ms of voiced audio is
+  discarded as a blip). The captured bytes are handed to the same
+  Google recogniser as `sr.AudioData`. If the capture itself fails
+  before producing an utterance (device busy/missing, stream error),
+  `listen_once` automatically falls back to the classic
+  `recognizer.listen` path. The wake-word loop uses the same
+  `listen_once`, so it gets VAD segmentation too. One library
+  boundary remains: recognition itself is still the recogniser's
+  blocking network call — VAD controls *capture*, not recognition.
+- **Barge-in** (`orvix/barge_in.py`, neural voice only): while
+  pygame plays a reply, a monitor thread watches the microphone.
+  The first 300 ms are a guard window whose loudest RMS becomes the
+  playback-leakage baseline; afterwards the user must sustain a
+  level above `max(0.16 RMS, baseline × 1.8)` for 300 ms. On trigger
+  the engine stops playback and the app moves SPEAKING → LISTENING
+  (`_barge_in_listen`). There is **no echo cancellation**: with loud
+  speakers in a small room the baseline can rise until only a close,
+  loud interruption registers — headphones make barge-in reliable.
+  An interruption that begins inside the guard window also raises
+  the baseline; speak after the first fraction of a second. The
+  pyttsx3 fallback is a blocking call with no stoppable playback
+  handle, so barge-in does not exist on that path.
 
 ## Floating window behaviour
 
