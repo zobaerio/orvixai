@@ -17,6 +17,8 @@ from orvix.agent import OrvixAgent
 from orvix.task_planner import classify_plan_step_kind, format_plan_guidance, generate_task_plan, should_generate_task_plan
 from orvix.settings import auto_configure_from_api_key, get_api_key, load_settings, save_settings, set_api_key, test_api_connection, validate_api_base_url, validate_api_key_transport
 from orvix.speech import SpeechEngine
+from orvix.core_states import CoreState
+from orvix.floating_core import FloatingCoreWidget
 from orvix.avatar_studio import launch_avatar_studio
 from orvix.health import collect_system_health, summarize_system_health
 from orvix.task_store import TaskStore, filter_task_records, build_safe_diagnostics
@@ -82,6 +84,8 @@ class OrvixDesktop:
         self.wake_enabled = False
         self._wake_thread: threading.Thread | None = None
         self._speech_active = threading.Event()
+        self._hero_core: FloatingCoreWidget | None = None
+        self._hud_core: FloatingCoreWidget | None = None
         self._configure_styles()
         self._prepare_avatar_images()
         self._build_ui()
@@ -142,11 +146,12 @@ class OrvixDesktop:
                         takefocus=True)
         self._floating_orb = orb
         orb.pack(padx=8, pady=(7, 0))
-        orb.create_oval(5, 5, 67, 67, outline="#164e63", width=5)
-        orb.create_oval(11, 11, 61, 61, outline=ACCENT, width=2)
-        orb.create_oval(19, 19, 53, 53, fill="#0e2c3c", outline="#67e8f9", width=1)
-        orb.create_text(36, 36, text="J", fill="#e0fbff",
-                        font=("Segoe UI Black", 25, "bold"))
+        # Animated Floating AI Core on the existing HUD canvas. The widget
+        # only deletes its own tagged items, so the status dot below and
+        # the drag/tooltip bindings on this canvas keep working unchanged.
+        self._hud_core = FloatingCoreWidget(canvas=orb, size=72, bg="#07111f")
+        self._hud_core.set_level_provider(self._core_audio_level)
+        self._hud_core.start()
         self._floating_status_dot = orb.create_oval(53, 5, 66, 18, fill="#64748b", outline="#07111f", width=2)
         label = tk.Label(shell, text="ORVIX", bg="#07111f", fg=ACCENT,
                          font=("Segoe UI", 8, "bold"), cursor="fleur")
@@ -443,6 +448,53 @@ class OrvixDesktop:
     def _hide_floating_hud(self) -> None:
         self._floating_hud.withdraw()
 
+    # -- Floating AI Core bridge -------------------------------------
+    # The animated core (hero + floating HUD) is driven only by real
+    # application events: task lifecycle, voice capture/playback and
+    # status changes funnel through _set_core_state. See FLOATING_CORE.md.
+    def _set_core_state(self, state: CoreState) -> None:
+        for widget in (self._hero_core, self._hud_core):
+            if widget is not None:
+                try:
+                    widget.set_state(state)
+                except Exception:
+                    pass  # core visuals must never break the assistant
+
+    def _core_audio_level(self) -> None:
+        """Audio level source for the core's LISTENING/SPEAKING states.
+
+        SpeechEngine exposes no live level: speech_recognition does not
+        report microphone RMS and pygame playback does not report an
+        output level. Returning None is deliberate — the hook is wired
+        so a future level-capable engine can be dropped in here, and
+        until then the core uses its state-driven pulse instead of
+        fabricated audio data.
+        """
+        return None
+
+    def _core_after_speech(self) -> None:
+        """Return the core to IDLE when speech playback has ended."""
+        for widget in (self._hero_core, self._hud_core):
+            if widget is not None and widget.state is CoreState.SPEAKING:
+                try:
+                    widget.set_state(CoreState.IDLE)
+                except Exception:
+                    pass
+
+    def _core_state_for_status(self, status: str) -> CoreState:
+        text = status.upper()
+        if "LISTEN" in text:
+            return CoreState.LISTENING
+        if "THINK" in text:
+            return CoreState.THINKING
+        if "EXECUT" in text:
+            return CoreState.EXECUTING
+        if "CANCELL" in text:
+            return CoreState.PROCESSING
+        if "VOICE RECEIVED" in text:
+            return CoreState.PROCESSING
+        return CoreState.IDLE
+
     def _configure_styles(self) -> None:
         style = ttk.Style(self.root)
         try:
@@ -684,6 +736,14 @@ class OrvixDesktop:
         self.core_canvas = tk.Canvas(hero, bg="#061020", highlightthickness=0, height=320)
         self.core_canvas.pack(fill="both", expand=True, padx=5, pady=(0, 5))
         self.core_canvas.bind("<Configure>", lambda _e: self._render_core())
+        # Animated Floating AI Core: a living energy core replaces the old
+        # static avatar-rig circle in the hero. It is a sibling canvas over
+        # the hero panel; _render_core keeps drawing grid/callouts/waveform
+        # on core_canvas underneath it.
+        self._hero_core = FloatingCoreWidget(hero, size=250, bg="#061020")
+        self._hero_core.canvas.place(relx=0.15, rely=0.56, anchor="center")
+        self._hero_core.set_level_provider(self._core_audio_level)
+        self._hero_core.start()
         self.core_mode = "READY"
         self._animation_phase = 0.0
         self._blink_frames = 0
@@ -884,42 +944,16 @@ class OrvixDesktop:
         for y in range(0, height, 30):
             canvas.create_line(0, y, width, y, fill=grid_color, width=1)
         phase = getattr(self, "_animation_phase", 0.0)
-        cx, cy = int(width * 0.29), int(height * 0.52)
-        base = min(133, int(height * 0.43))
-        # Rotating orbital rings and arcs
-        for idx, radius in enumerate((base + 23, base + 8, base - 8, base - 22)):
-            color = ("#146488", "#1b89b8", "#2352a0", "#1e416a")[idx]
-            canvas.create_oval(cx-radius, cy-radius, cx+radius, cy+radius,
-                               outline=color, width=1 if idx != 1 else 2)
-        for idx, radius in enumerate((base + 34, base - 31)):
-            start = int((phase * 70 + idx * 145) % 360)
-            canvas.create_arc(cx-radius, cy-radius, cx+radius, cy+radius,
-                              start=start, extent=115, style="arc",
-                              outline=ACCENT if idx == 0 else "#7c8cff", width=3)
-        # Orbiting particles
         import math
-        for idx in range(8):
-            angle = phase + (math.tau * idx / 8)
-            radius = base + (24 if idx % 2 == 0 else 2)
-            px = cx + math.cos(angle) * radius
-            py = cy + math.sin(angle) * radius * 0.68
-            canvas.create_oval(px-3, py-3, px+3, py+3,
-                               fill=ACCENT if idx % 2 == 0 else "#ffb36b", outline="")
-        # The supplied stills remain profile thumbnails only. Do not fake a 3D body
-        # by rotating the bitmap; the actual procedural 3D avatar opens in Avatar Studio.
-        pulse = 1.0 + 0.025 * math.sin(phase * 1.7)
-        orb_r = 68 * pulse
-        for radius, color, width_px in ((orb_r + 28, "#155f88", 1), (orb_r + 12, "#1789b5", 2), (orb_r, ACCENT, 2)):
-            canvas.create_oval(cx-radius, cy-radius, cx+radius, cy+radius, outline=color, width=width_px)
-        canvas.create_oval(cx-orb_r*.70, cy-orb_r*.70, cx+orb_r*.70, cy+orb_r*.70,
-                           fill="#0d2e4b", outline="#3cc6ee", width=2)
-        canvas.create_text(cx, cy-8, text="3D", fill="#dffaff", font=("Segoe UI Black", 31, "bold"))
-        canvas.create_text(cx, cy+25, text="AVATAR RIG", fill=ACCENT, font=("Consolas", 9, "bold"))
-        for idx in range(6):
-            angle = phase * 0.7 + idx * math.tau / 6
-            radius = orb_r + 20 + (idx % 2) * 10
-            px, py = cx + math.cos(angle) * radius, cy + math.sin(angle) * radius * .63
-            canvas.create_oval(px-3, py-3, px+3, py+3, fill=ACCENT if idx % 2 else ORANGE, outline="")
+        # The living energy core itself is drawn by the FloatingCoreWidget
+        # (orvix/floating_core.py) on its own canvas above this one; this
+        # method now only paints the grid, callouts and waveform beneath it.
+        # Keep the widget sized to the hero panel.
+        if getattr(self, "_hero_core", None) is not None:
+            try:
+                self._hero_core.resize(max(170, min(260, height - 56)))
+            except Exception:
+                pass
         # Core callout
         text_x = min(width - 20, int(width * 0.62))
         compact_canvas = width < 520
@@ -1094,6 +1128,7 @@ class OrvixDesktop:
             self.cancel_task_btn.configure(state="disabled", text="CANCELLATION REQUESTED")
         self.core_mode = "CANCELLATION REQUESTED"
         self.status_dot.configure(text="● CANCELLING", fg=ORANGE)
+        self._set_core_state(CoreState.PROCESSING)
         self._render_core()
         self._push_activity("Cancellation requested")
         queue_note = ""
@@ -1935,6 +1970,7 @@ class OrvixDesktop:
             return
         self.core_mode = "EXECUTING"
         self.status_dot.configure(text="● EXECUTING", fg=ACCENT)
+        self._set_core_state(CoreState.EXECUTING)
         self._render_core()
 
     def _work(self, text: str, task_id: str | None, cancel_event: threading.Event) -> None:
@@ -2072,6 +2108,10 @@ class OrvixDesktop:
             self._active_task_cancel_event = None
             self._active_task_command = ""
         self._set_busy(False, "● READY")
+        if task_status == "failed":
+            self._set_core_state(CoreState.ERROR)
+        elif task_status in ("completed", "partial"):
+            self._set_core_state(CoreState.COMPLETED)
         self._refresh_queue_button()
         if self.settings.get("speak_replies", True):
             threading.Thread(target=self._speak_safely, args=(result, self._queue_armed), daemon=True).start()
@@ -2085,10 +2125,15 @@ class OrvixDesktop:
         self._speech_active.set()
         try:
             if len(text) <= 1600 and not text.startswith("AI provider error"):
+                try:
+                    self.root.after(0, self._set_core_state, CoreState.SPEAKING)
+                except tk.TclError:
+                    pass
                 self.speech.speak(text, str(self.settings.get("voice", "bn-BD-PradeepNeural")))
         finally:
             self._speech_active.clear()
             try:
+                self.root.after(0, self._core_after_speech)
                 if continue_queue and self._queue_armed:
                     self.root.after(150, self._start_next_queued_task)
                 elif self.wake_enabled:
@@ -2121,6 +2166,7 @@ class OrvixDesktop:
     def _voice_failed(self, message: str) -> None:
         self._busy = False
         self._set_busy(False, "● READY")
+        self._set_core_state(CoreState.ERROR)
         self.mic_btn.configure(text="🎙  Speak", state="normal")
         self._write_message("SYSTEM", message, "system")
 
@@ -2129,6 +2175,7 @@ class OrvixDesktop:
             status = "● WAKE WORD ON"
         self.core_mode = status.replace("●", "").strip()
         self.status_dot.configure(text=status, fg=ORANGE if busy else GREEN)
+        self._set_core_state(self._core_state_for_status(status))
         if hasattr(self, "core_canvas"):
             self._render_core()
         # Keep text entry/send available while a task runs so a user can queue
