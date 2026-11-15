@@ -1,0 +1,128 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="theme-color" content="#050d1d" />
+  <title>ORVIX — AI Agent Assistant</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <div class="app-shell">
+    <header class="topbar">
+      <a class="brand" href="#" aria-label="ORVIX Home">
+        <span class="brand-mark"><span>▲</span></span>
+        <span class="brand-copy"><strong>ORVIX</strong><small>AI AGENT ASSISTANT <b id="appVersion">—</b></small></span>
+      </a>
+      <nav class="main-nav" aria-label="Main navigation">
+        <button class="nav-item active" data-tab="home">⌂ <span>Home</span></button>
+        <button class="nav-item" data-tab="tools">▦ <span>Tools</span></button>
+        <button class="nav-item" data-tab="settings">⚙ <span>Settings</span></button>
+        <button class="nav-item" data-tab="about">ⓘ <span>About</span></button>
+      </nav>
+      <div class="top-status"><span class="online-dot"></span><span id="connectionLabel">Not connected</span></div>
+      <div class="clock"><strong id="clockTime">--:--:--</strong><small id="clockDate">Loading date…</small></div>
+      <button class="icon-button" id="notificationsButton" aria-label="Notifications">♧</button>
+      <button class="avatar-button" aria-label="Profile">●</button>
+    </header>
+
+    <main class="dashboard" id="homeView">
+      <aside class="left-column">
+        <section class="panel system-panel">
+          <div class="panel-heading"><h2><span class="heading-icon">⌁</span> System Overview</h2><span class="live-pill" id="livePill"><i></i> DEMO</span></div>
+          <div class="meter-row">
+            <div class="meter"><div class="ring ring-cyan" data-stat="cpu" style="--value:0"><span>—</span></div><small>CPU</small></div>
+            <div class="meter"><div class="ring ring-green" data-stat="ram" style="--value:0"><span>—</span></div><small>RAM</small></div>
+            <div class="meter"><div class="ring ring-blue" data-stat="storage" style="--value:0"><span>—</span></div><small>STORAGE</small></div>
+          </div>
+          <div class="windows-info"><div class="windows-logo">▦</div><div><b>Windows Info</b><small id="osInfo">—</small></div><span class="uptime">◷ <small>Uptime<br><b id="uptimeValue">—</b></small></span></div>
+        </section>
+
+        <section class="panel character-panel">
+          <div class="panel-heading"><h2>♟ Choose Your Character</h2><span class="muted">3 PROFILES</span></div>
+          <div class="character-grid">
+            <button class="character selected" data-character="LUNA"><span class="character-art luna">L</span><b>LUNA</b><small>Calm strategy companion</small><i></i></button>
+            <button class="character" data-character="RUBY"><span class="character-art ruby">R</span><b>RUBY</b><small>Confident action companion</small><i></i></button>
+            <button class="character" data-character="MAYA"><span class="character-art maya">M</span><b>MAYA</b><small>Warm creative companion</small><i></i></button>
+          </div>
+        </section>
+
+        <section class="panel voice-panel">
+          <div class="panel-heading"><h2>♩ Voice Control</h2><label class="switch"><input type="checkbox" id="voiceToggle" checked><span></span></label></div>
+          <div class="voice-wave" aria-hidden="true"><span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span></div>
+          <div class="wake-row">Wake Word: <button id="wakeWordButton">Hey ORVIX</button></div>
+        </section>
+      </aside>
+
+      <section class="center-column">
+        <section class="hero panel">
+          <div class="hero-grid"></div>
+          <div class="hero-kicker"><span></span> YOUR SMART AI COMPANION <span></span></div>
+          <div class="reactor-wrap" id="coreWrap" data-state="idle">
+            <div class="reactor outer"></div><div class="reactor middle"></div><div class="reactor inner"></div>
+            <div class="core-logo">▲</div>
+          </div>
+          <h1>ORVIX</h1>
+          <p class="hero-subtitle">AI AGENT ASSISTANT</p>
+          <div class="hero-caption"><span>Speak</span><i>•</i><span>Command</span><i>•</i><span>Get Results</span></div>
+          <div class="hero-bottom"><span class="pulse-dot"></span> <span id="coreModeLabel">—</span> <span class="separator">/</span> <span id="activeCharacter">—</span> ONLINE</div>
+        </section>
+
+        <section class="panel chat-panel">
+          <div class="chat-heading"><div><span class="heading-icon">◉</span><b>AI AGENT · TASK EXECUTION</b></div><span class="ready"><i></i> READY</span></div>
+          <div class="chat-log" id="chatLog" aria-live="polite">
+            <div class="message assistant-message"><b>ORVIX</b><p>আসসালামু আলাইকুম! আমি ORVIX, আপনার AI Desktop Assistant। বাংলা বা English-এ কমান্ড দিন। আমি আপনার কাজ সহজ করতে প্রস্তুত।</p><small>আপনি বলতে পারেন: “Open Chrome”, “Notepad kholo”, “YouTube kholo”</small></div>
+            <div class="system-note"><span>ⓘ SYSTEM</span><p>Live উত্তর ও telemetry ORVIX desktop bridge থেকে আসে। Bridge ছাড়া পেজটি standalone খুললে not-connected demo state দেখায় — কোনো ভুয়া data দেখানো হয় না।</p></div>
+          </div>
+          <div class="chat-composer">
+            <button class="mic-button" id="micButton" title="Start voice input">🎙</button>
+            <input id="commandInput" type="text" placeholder="Ask ORVIX anything or type a command…" autocomplete="off" />
+            <button class="send-button" id="sendButton">➤ <span>Send</span></button>
+          </div>
+        </section>
+      </section>
+
+      <aside class="right-column">
+        <section class="panel quick-panel">
+          <div class="panel-heading"><h2><span class="heading-icon">ϟ</span> Quick Actions</h2><button class="text-button" data-tab="tools">See All →</button></div>
+          <div class="quick-grid">
+            <button class="quick-action" data-action="chrome"><span class="app-icon chrome">◉</span><b>Open Chrome</b></button>
+            <button class="quick-action" data-action="youtube"><span class="app-icon youtube">▶</span><b>YouTube</b></button>
+            <button class="quick-action" data-action="notepad"><span class="app-icon notepad">▤</span><b>Notepad</b></button>
+            <button class="quick-action" data-action="calculator"><span class="app-icon calculator">▦</span><b>Calculator</b></button>
+            <button class="quick-action" data-action="files"><span class="app-icon folder">▰</span><b>File Explorer</b></button>
+            <button class="quick-action" data-action="power"><span class="app-icon power">⏻</span><b>Power Menu</b></button>
+          </div>
+        </section>
+
+        <section class="panel model-panel">
+          <div class="panel-heading"><h2><span class="heading-icon">♧</span> AI Model Status</h2><span class="connected-pill" id="modelConnectedPill"><i></i> NOT CONNECTED</span></div>
+          <div class="model-content">
+            <div class="model-brand"><div class="ai-symbol">✳</div><b id="modelName">—</b><small id="modelEndpoint">—</small></div>
+            <div class="model-checks" id="modelChecks">
+              <div><i>•</i> Internet: <b>Not checked</b></div>
+            </div>
+          </div>
+          <button class="outline-button" id="modelSettingsButton">Configure AI Model →</button>
+        </section>
+
+        <section class="panel performance-panel">
+          <div class="panel-heading"><h2>▥ Live Performance</h2><span class="muted">LIVE</span></div>
+          <div class="performance-chart" id="performanceChart" aria-label="Decorative live performance graph"></div>
+          <div class="performance-labels"><span id="perfCaption">CPU — · RAM —</span></div>
+        </section>
+      </aside>
+    </main>
+
+    <section class="secondary-view panel hidden" id="secondaryView">
+      <div class="panel-heading"><h2 id="secondaryTitle">Tools</h2><button class="text-button" id="backHome">← Back to Home</button></div>
+      <p id="secondaryDescription">ORVIX tools and configuration.</p>
+      <div class="secondary-cards" id="secondaryCards"></div>
+    </section>
+
+    <footer class="footer"><span><b>ORVIX</b> <i>•</i> Built with <em>♥</em> for a Smarter Tomorrow</span><strong>ENGINEERING PRECISION. DIGITAL INNOVATION.</strong><div class="footer-links"><a href="#" aria-label="GitHub">⌘</a><a href="#" aria-label="YouTube">▶</a><a href="#" aria-label="Telegram">➤</a></div></footer>
+    <div class="toast" id="toast" role="status"></div>
+  </div>
+  <script src="app.js"></script>
+</body>
+</html>

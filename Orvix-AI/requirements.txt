@@ -12,3 +12,5 @@ pyperclip>=1.9.0
 Send2Trash>=1.8.3
 pystray>=0.19.5
 opencv-python>=4.10.0
+# WebView home window (on Windows it uses the preinstalled Microsoft Edge WebView2 runtime)
+pywebview>=4.4.1

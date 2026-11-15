@@ -1,0 +1,332 @@
+// ORVIX WebView home — bridge client.
+//
+// This page is a thin client of the ORVIX desktop app. All live values
+// (system stats, model status, core state, chat messages) arrive from the
+// desktop bridge; the page never invents telemetry, model answers or
+// action results. Opened standalone (no bridge) it stays in an honest
+// not-connected demo state: meters show "—", actions explain that the
+// desktop bridge is required, and no fake replies are generated.
+const $ = (selector) => document.querySelector(selector);
+const $$ = (selector) => [...document.querySelectorAll(selector)];
+const toast = (message) => {
+  const el = $("#toast"); el.textContent = message; el.classList.add("show");
+  clearTimeout(window.__toastTimer); window.__toastTimer = setTimeout(() => el.classList.remove("show"), 2800);
+};
+
+function updateClock() {
+  const now = new Date();
+  $("#clockTime").textContent = now.toLocaleTimeString([], {hour12:false});
+  $("#clockDate").textContent = now.toLocaleDateString([], {weekday:"short", day:"2-digit", month:"short", year:"numeric"});
+}
+updateClock(); setInterval(updateClock, 1000);
+
+function addMessage(type, text, speaker) {
+  const wrap = document.createElement("div");
+  wrap.className = type === "user" ? "message user-message" : "message assistant-message";
+  const label = document.createElement("b");
+  label.textContent = speaker || (type === "user" ? "YOU" : type === "system" ? "SYSTEM" : "ORVIX");
+  const p = document.createElement("p"); p.textContent = text;
+  wrap.append(label, p); $("#chatLog").appendChild(wrap);
+  $("#chatLog").scrollTop = $("#chatLog").scrollHeight;
+}
+
+// ---------------------------------------------------------------------------
+// Desktop bridge detection.
+// The desktop app exposes either window.orvixBridge (preload-style) or the
+// pywebview bridge at window.pywebview.api. Python pushes live state back
+// through window.orvixPushState / window.orvixPushMessages below.
+// ---------------------------------------------------------------------------
+let bridgeApi = null; let connected = false; let lastState = null;
+function detectBridge(){ if (window.orvixBridge) return window.orvixBridge; if (window.pywebview && window.pywebview.api) return window.pywebview.api; return null; }
+function tryConnect(){ const api = detectBridge(); if (api && !connected){ bridgeApi = api; connected = true; setConnectedUI(true); } }
+window.addEventListener('pywebviewready', tryConnect);
+document.addEventListener('DOMContentLoaded', tryConnect);
+
+function callBridge(method, args) {
+  // Fire-and-forget bridge call: pywebview methods return promises, so a
+  // rejection is surfaced as a toast instead of an unhandled rejection.
+  if (!bridgeApi || typeof bridgeApi[method] !== "function") return false;
+  try {
+    const result = bridgeApi[method](...(args || []));
+    if (result && typeof result.catch === "function") {
+      result.catch((error) => toast("Bridge error: " + (error && error.message ? error.message : error)));
+    }
+    return true;
+  } catch (error) {
+    toast("Bridge error: " + (error && error.message ? error.message : error));
+    return false;
+  }
+}
+
+function setConnectedUI(isConnected) {
+  const label = $("#connectionLabel");
+  if (label) label.textContent = isConnected ? "Online" : "Not connected";
+  const pill = $("#modelConnectedPill");
+  if (pill) pill.innerHTML = isConnected ? "<i></i> CONNECTED" : "<i></i> NOT CONNECTED";
+  const live = $("#livePill");
+  if (live) live.innerHTML = isConnected ? "<i></i> LIVE" : "<i></i> DEMO";
+}
+
+// ---------------------------------------------------------------------------
+// Live performance strip: bars are real CPU samples pushed by the bridge.
+// Before the first sample every bar stays at 0 height — nothing is faked.
+// ---------------------------------------------------------------------------
+const PERF_BARS = 38;
+const perfData = [];
+let perfCpu = null; let perfRam = null;
+function fmtPercent(value) { return value == null ? "—" : Math.round(value) + "%"; }
+function renderPerf() {
+  const chart = $("#performanceChart");
+  if (!chart) return;
+  while (chart.children.length < PERF_BARS) chart.appendChild(document.createElement("span"));
+  while (chart.children.length > PERF_BARS) chart.removeChild(chart.lastChild);
+  [...chart.children].forEach((bar, i) => {
+    const value = i < perfData.length ? perfData[i] : null;
+    bar.style.height = (value == null ? 0 : Math.max(0, Math.min(100, value))) + "%";
+  });
+  const caption = $("#perfCaption");
+  if (caption) caption.textContent = `CPU ${fmtPercent(perfCpu)} · RAM ${fmtPercent(perfRam)}`;
+}
+
+function setRing(stat, value) {
+  const ring = document.querySelector(`.ring[data-stat="${stat}"]`);
+  if (!ring) return;
+  const span = ring.querySelector("span");
+  if (value == null) {
+    ring.style.setProperty("--value", 0);
+    if (span) span.textContent = "—";
+  } else {
+    ring.style.setProperty("--value", value);
+    if (span) span.textContent = Math.round(value) + "%";
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Python -> JS pushes. State shape (all fields may be missing/null):
+// { version, stats:{cpu, ram, storage, osName, machine, uptime},
+//   model:{name, endpoint, statusLines:[{label, value, state}]},
+//   core:{state, mode}, character, wakeEnabled }
+// ---------------------------------------------------------------------------
+window.orvixPushState = function (state) {
+  if (!state || typeof state !== "object") return;
+  lastState = state; window.__orvixState = state;
+  if (!connected) { connected = true; bridgeApi = bridgeApi || detectBridge(); setConnectedUI(true); }
+
+  const versionEl = $("#appVersion");
+  if (versionEl) versionEl.textContent = state.version ? "v" + state.version : "—";
+
+  const stats = state.stats || {};
+  setRing("cpu", stats.cpu); setRing("ram", stats.ram); setRing("storage", stats.storage);
+
+  const osInfo = $("#osInfo");
+  if (osInfo) {
+    if (!stats.osName || stats.osName === "—") osInfo.textContent = "—";
+    else osInfo.textContent = stats.osName + (stats.machine ? " · " + stats.machine : "");
+  }
+  const uptime = $("#uptimeValue");
+  if (uptime) uptime.textContent = stats.uptime || "—";
+
+  const model = state.model || {};
+  const modelName = $("#modelName");
+  if (modelName) modelName.textContent = model.name || "—";
+  const modelEndpoint = $("#modelEndpoint");
+  if (modelEndpoint) modelEndpoint.textContent = model.endpoint || "Not configured";
+
+  const checks = $("#modelChecks");
+  if (checks && Array.isArray(model.statusLines)) {
+    const lines = model.statusLines.length
+      ? model.statusLines
+      : [{ label: "Internet", value: "Not checked", state: null }];
+    checks.replaceChildren();
+    lines.forEach((line) => {
+      const row = document.createElement("div");
+      const icon = document.createElement("i");
+      icon.textContent = line.state === true ? "✓" : line.state === false ? "✕" : "•";
+      const bold = document.createElement("b");
+      bold.textContent = line.value == null ? "" : String(line.value);
+      row.append(icon, document.createTextNode((line.label || "") + ": "), bold);
+      checks.appendChild(row);
+    });
+  }
+
+  const core = state.core || {};
+  const coreWrap = $("#coreWrap");
+  if (coreWrap && core.state) coreWrap.dataset.state = core.state;
+  const coreMode = $("#coreModeLabel");
+  if (coreMode) coreMode.textContent = core.mode || "—";
+
+  if (state.character) {
+    const key = String(state.character).toUpperCase();
+    const match = $$(".character").find((item) => item.dataset.character === key);
+    if (match) {
+      $$(".character").forEach((item) => item.classList.toggle("selected", item === match));
+      const active = $("#activeCharacter");
+      if (active) active.textContent = match.dataset.character;
+    }
+  }
+
+  const toggle = $("#voiceToggle");
+  if (toggle && state.wakeEnabled !== undefined) toggle.checked = !!state.wakeEnabled;
+
+  perfCpu = stats.cpu == null ? null : stats.cpu;
+  perfRam = stats.ram == null ? null : stats.ram;
+  perfData.push(stats.cpu == null ? null : stats.cpu);
+  while (perfData.length > PERF_BARS) perfData.shift();
+  renderPerf();
+};
+
+window.orvixPushMessages = function (list) {
+  (list || []).forEach((m) => {
+    if (!m) return;
+    addMessage(m.kind === "user" ? "user" : m.kind === "system" ? "system" : "assistant", m.text, m.speaker);
+  });
+};
+
+// ---------------------------------------------------------------------------
+// User actions -> bridge (live) or honest demo behaviour (standalone).
+// ---------------------------------------------------------------------------
+function runAction(action) {
+  if (connected && callBridge("runAction", [action])) {
+    toast("Request sent: " + action);
+    return;
+  }
+  toast("Not connected — desktop bridge required.");
+  addMessage("system", `"${action}" needs the ORVIX desktop bridge.`);
+}
+$$(".quick-action").forEach(button => button.addEventListener("click", () => runAction(button.dataset.action)));
+
+function sendCommand() {
+  const input = $("#commandInput");
+  const command = input.value.trim();
+  if (!command) return;
+  input.value = "";
+  if (connected && bridgeApi && typeof bridgeApi.sendCommand === "function") {
+    // Nothing is echoed locally: the app pushes the real exchange back
+    // through orvixPushMessages once it has actually run the command.
+    callBridge("sendCommand", [command]);
+    return;
+  }
+  addMessage("user", command);
+  addMessage("system", "Not connected — open ORVIX via the desktop app (WebView home) to run commands. Standalone page is a demo.");
+}
+$("#sendButton").addEventListener("click", sendCommand);
+$("#commandInput").addEventListener("keydown", e => { if (e.key === "Enter") sendCommand(); });
+
+$$(".character").forEach(button => button.addEventListener("click", () => {
+  $$(".character").forEach(item => item.classList.remove("selected"));
+  button.classList.add("selected");
+  const name = button.dataset.character;
+  $("#activeCharacter").textContent = name;
+  if (connected) {
+    // Live mode: the app confirms with its own pushed system message.
+    callBridge("selectCharacter", [name]);
+  } else {
+    toast(`${name} character profile selected (demo — not saved).`);
+  }
+}));
+
+const voiceToggle = $("#voiceToggle");
+voiceToggle.addEventListener("change", () => {
+  if (connected) { callBridge("setWakeWord", [voiceToggle.checked]); return; }
+  toast(voiceToggle.checked ? "Voice control enabled (demo — not saved)." : "Voice control disabled (demo — not saved).");
+});
+$("#wakeWordButton").addEventListener("click", () => {
+  voiceToggle.checked = !voiceToggle.checked;
+  voiceToggle.dispatchEvent(new Event("change"));
+});
+
+// Standalone fallback only: browser speech recognition fills the composer.
+// In the desktop app the mic routes to the app's own speech engine instead.
+let recognition = null;
+const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+if (SpeechRecognition) {
+  recognition = new SpeechRecognition();
+  recognition.lang = "bn-BD"; recognition.interimResults = false; recognition.continuous = false;
+  recognition.onstart = () => { $("#micButton").classList.add("listening"); toast("Listening… Speak now."); };
+  recognition.onend = () => $("#micButton").classList.remove("listening");
+  recognition.onerror = () => toast("Voice recognition could not start. Check microphone permission.");
+  recognition.onresult = e => { $("#commandInput").value = e.results[0][0].transcript; sendCommand(); };
+} else {
+  $("#micButton").title = "Speech recognition is not supported in this browser";
+}
+$("#micButton").addEventListener("click", () => {
+  if (connected && bridgeApi && typeof bridgeApi.startListening === "function") {
+    callBridge("startListening", []);
+    toast("Listening…");
+    return;
+  }
+  if (!voiceToggle.checked) return toast("Enable Voice Control first.");
+  if (!recognition) return toast("এই ব্রাউজারে Voice Recognition সমর্থিত নয়।");
+  try { recognition.start(); } catch (_) { toast("Voice input is already active."); }
+});
+
+$("#modelSettingsButton").addEventListener("click", () => {
+  if (connected && bridgeApi && typeof bridgeApi.openConsole === "function") { callBridge("openConsole", []); return; }
+  showTab("settings");
+});
+$("#notificationsButton").addEventListener("click", () => toast("No new notifications."));
+
+const tabContent = {
+  tools: {title:"ORVIX Tools", desc:"Quick access to your desktop tools and assistant capabilities.", cards:[
+    ["Voice Assistant","Speech recognition, wake word and text-to-speech controls."],
+    ["File Manager","Search, organize and manage local files (desktop bridge required)."],
+    ["Web Assistant","Open websites and perform browser-based tasks."],
+    ["AI Chat","Connect your local or cloud AI model for conversational responses."],
+    ["System Monitor","Display real CPU, RAM, storage and uptime telemetry."],
+    ["Task Manager","Queue, run, cancel and review desktop automation tasks."]
+  ]},
+  settings: {title:"Settings & Connections", desc:"Configure your ORVIX desktop integrations. Values shown here are interface placeholders.", cards:[
+    ["AI Model Endpoint","Connect your local model endpoint and configure model name, API URL and access key."],
+    ["Voice Settings","Choose recognition language, microphone, voice output and wake word."],
+    ["Appearance","Customize theme, animations, density and assistant character."],
+    ["Permissions","Control access to files, applications, browser and system actions."]
+  ]},
+  about: {title:"About ORVIX", desc:"ORVIX is a desktop AI assistant interface designed for voice, commands and productivity.", cards:[
+    ["Version","—"],
+    ["Architecture","Frontend dashboard with optional desktop bridge and AI endpoint."],
+    ["Privacy","Keep credentials in the desktop main process; do not expose API keys in frontend code."]
+  ]}
+};
+function showTab(tab) {
+  if (tab === "home") {
+    $("#homeView").classList.remove("hidden"); $("#secondaryView").classList.add("hidden");
+  } else {
+    const data = tabContent[tab] || tabContent.tools;
+    $("#homeView").classList.add("hidden"); $("#secondaryView").classList.remove("hidden");
+    $("#secondaryTitle").textContent = data.title; $("#secondaryDescription").textContent = data.desc;
+    $("#secondaryCards").replaceChildren();
+    data.cards.forEach(([title, desc]) => {
+      const card = document.createElement("article"); card.className = "secondary-card";
+      const h = document.createElement("h3"); h.textContent = title;
+      const p = document.createElement("p"); p.textContent = desc;
+      card.append(h,p); $("#secondaryCards").append(card);
+    });
+    if (tab === "about") {
+      const version = (window.__orvixState && window.__orvixState.version) || (lastState && lastState.version);
+      if (version) {
+        $$("#secondaryCards .secondary-card").forEach((card) => {
+          const h = card.querySelector("h3"); const p = card.querySelector("p");
+          if (h && p && h.textContent === "Version") p.textContent = `ORVIX AI Agent Assistant · v${version}`;
+        });
+      }
+    }
+  }
+  $$(".nav-item").forEach(item => item.classList.toggle("active", item.dataset.tab === tab));
+}
+$$(".nav-item").forEach(button => button.addEventListener("click", () => {
+  const tab = button.dataset.tab;
+  if (tab === "settings" && connected && bridgeApi && typeof bridgeApi.openConsole === "function") {
+    callBridge("openConsole", []);
+    toast("Settings open in the ORVIX console window.");
+    return;
+  }
+  showTab(tab);
+}));
+$$("[data-tab='tools']").forEach(button => button.addEventListener("click", () => showTab("tools")));
+$("#backHome").addEventListener("click", () => showTab("home"));
+
+// Initial state: not connected until the bridge proves otherwise, and an
+// empty performance strip (all bars at 0 height, caption shows dashes).
+setConnectedUI(false);
+renderPerf();
+tryConnect();

@@ -45,6 +45,7 @@ from orvix.version import APP_NAME, APP_VERSION
 from orvix.branding import ensure_brand_assets
 from orvix.startup import is_windows_startup_enabled, set_windows_startup
 from orvix.ui_formatters import bounded_float, bounded_int, bounded_window_origin, format_header_clock
+from orvix.webview_home import WebViewHome, webview_available, webview_home_enabled
 
 BG = "#0b1120"
 PANEL = "#111a2e"
@@ -79,6 +80,7 @@ class OrvixDesktop:
         self.settings = load_settings()
         self.speech = SpeechEngine()
         self.events: queue.Queue = queue.Queue()
+        self._web_home = None  # WebViewHome instance while the HTML home window is open
         self.agent = OrvixAgent(self.settings, self._request_approval)
         self._busy = False
         self.task_store = TaskStore()
@@ -1763,6 +1765,12 @@ class OrvixDesktop:
         self.chat.insert("end", "\n", "body")
         self.chat.configure(state="disabled")
         self.chat.see("end")
+        home = getattr(self, "_web_home", None)
+        if home is not None:
+            try:
+                home.push_message(speaker, text, kind)
+            except Exception:
+                pass  # the web home mirror must never break the console
 
     def _send_from_entry(self) -> None:
         if getattr(self, "_entry_placeholder_active", False):
@@ -3227,6 +3235,18 @@ class OrvixDesktop:
             text="When on, complex multi-step commands are planned and run by the Chief Intelligence Agent and its specialised agents using the endpoint above. Simple commands are unchanged. Desktop actions still ask for approval. Off by default.",
             bg=BG, fg=MUTED, font=("Segoe UI", 8), wraplength=540, justify="left",
         ).pack(fill="x", pady=(0, 6))
+        webview_var = tk.BooleanVar(value=bool(self.settings.get("webview_home", True)))
+        tk.Checkbutton(
+            pad,
+            text="WebView Home — open the HTML home window at startup",
+            variable=webview_var, bg=BG, fg=TEXT, activebackground=BG,
+            activeforeground=TEXT, selectcolor=CARD, font=("Segoe UI", 9),
+        ).pack(anchor="w", pady=(0, 2))
+        tk.Label(
+            pad,
+            text="The HTML home mirrors this console: same commands, same brain, live system data. If the WebView component is unavailable, ORVIX opens this console window exactly as before. Takes effect next launch; ORVIX_WEBVIEW_HOME=0 forces the console.",
+            bg=BG, fg=MUTED, font=("Segoe UI", 8), wraplength=540, justify="left",
+        ).pack(fill="x", pady=(0, 6))
 
         connection_status = tk.Label(
             pad, text="Connection not tested yet.", bg=BG, fg=MUTED,
@@ -3281,6 +3301,7 @@ class OrvixDesktop:
             new["voice"] = voice_var.get()
             new["speak_replies"] = speak_var.get()
             new["autonomous_brain"] = bool(brain_var.get())
+            new["webview_home"] = bool(webview_var.get())
             try:
                 new["api_base_url"] = validate_api_base_url(new["api_base_url"])
                 if not new["model"]:
@@ -3409,9 +3430,47 @@ class OrvixDesktop:
         except Exception:
             pass
         self._tray_icon = None
+        if getattr(self, "_web_home", None) is not None:
+            try:
+                self._web_home.stop()
+            except Exception:
+                pass
+            self._web_home = None
         self.root.destroy()
 
+    def _maybe_start_webview_home(self) -> None:
+        """Open the HTML WebView home when enabled and available.
+
+        The Tk window stays alive as the engine (voice, floating HUD,
+        overlay, executor). Any failure leaves the classic Tk home
+        exactly as before — this is a presentation layer only.
+        """
+        try:
+            if not webview_home_enabled(self.settings):
+                return
+            available, reason = webview_available()
+            if not available:
+                self._write_message(
+                    "SYSTEM",
+                    f"WebView home unavailable ({reason}); using the built-in home window.",
+                    "system",
+                )
+                return
+            home = WebViewHome(self)
+            if home.start():
+                self._web_home = home
+                self.root.withdraw()
+            else:
+                self._write_message(
+                    "SYSTEM",
+                    "WebView home could not start; using the built-in home window.",
+                    "system",
+                )
+        except Exception:
+            self._web_home = None
+
     def run(self) -> None:
+        self._maybe_start_webview_home()
         self.root.mainloop()
 
 
