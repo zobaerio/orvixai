@@ -101,14 +101,89 @@ agent when unconfigured. The core's states already reflect whichever
 backend runs the task, because they are driven by the task/voice
 lifecycle, not by a specific engine.
 
+## Small overlay orb (mini mode)
+
+The floating window's **mini mode is the small overlay orb**: a
+104×128 px frameless, always-on-top bubble that can be dragged to any
+position on the screen (position persists through the existing
+`floating_hud_*` settings). It renders the *same* `FloatingCoreWidget`
+at 88 px with the *same* 8 states — no duplicated animation logic
+(`orvix/overlay.py` holds only the pure geometry/interaction math).
+
+Interactions:
+
+- **Single click** (a press/release that barely moves — drags are
+  discriminated by travel distance) toggles a compact **command
+  palette** under the orb: a text entry, a ➤ submit button and a 🎙
+  mic button. The window grows downward to fit it, shifting up near
+  the screen bottom so the palette stays visible. `Esc` closes it.
+- **Submitting** a palette command routes through
+  `OrvixDesktop._send_text` — the exact entry point of the main
+  window's SEND button — so commands execute with the app's existing
+  tools, task queueing and approval gates. The workspace is then
+  raised, matching the floating MIC flow, so progress and any
+  approval prompts are visible.
+- **Double-click** opens/raises the main window (it cancels the
+  pending single-click toggle first).
+- **Right-click menu**: Open ORVIX, Command Palette, Switch
+  Mini/Expanded, Pin on top, HUD Opacity, Hide Floating HUD,
+  Quit Overlay. `Ctrl+Shift+J` summons/hides the overlay as before.
+
+Scope honesty: the overlay floats over other **desktop** applications
+— that is what an always-on-top desktop window does. It does not
+embed inside other applications or websites, and nothing in the UI or
+docs claims that. Web/app control happens because palette commands
+run through the app's existing browser/executor tools.
+
+Default behaviour follows the existing floating window: the HUD is
+shown at startup, and mini (overlay) mode is entered via the MINI
+button / context menu and then persisted (`floating_hud_mini`). The
+overlay is not forced on users who have not chosen it.
+
+## HUD home page
+
+The home view follows the HUD layout language of the owner's
+reference (top status bar, data-panel columns flanking the central
+core, bottom status strip) in the app's own dark navy/cyan style:
+
+- **Top bar** (existing): ORVIX wordmark, live clock/date, model
+  status, wake-word and floating-HUD controls.
+- **Left column**: System overview (CPU/memory from psutil, with an
+  honest "MONITOR N/A" fallback) and the new **Control Center**
+  panel — agents registered, providers configured, provider health,
+  task counts, budget and memory/lessons counts, plus an execution
+  log tail. Every value comes from the real Control Center snapshot
+  (`orvix/control_center.build_snapshot` over the shared `~/.orvix`
+  state — the same task queue/budget/audit files the CLI and Chief
+  use) combined with the desktop app's own `TaskStore` records,
+  assembled by the pure module `orvix/hud_data.py`. Anything missing
+  or never measured renders as a dash or an explicit "NOT CHECKED /
+  NO AUDIT EVENTS RECORDED" line — never an invented number.
+- **Centre**: the hero Floating AI Core, conversation and composer
+  (unchanged).
+- **Right column**: quick actions, active tasks (now including the
+  most recent task outcomes from the real task records), AI model
+  status and permissions (all pre-existing).
+- **Bottom strip**: the footer now reflects the live core mode
+  (READY / THINKING / EXECUTING / …).
+
+Panels refresh on a 2 s throttled timer that pauses while the main
+window is minimised or not viewable, and immediately whenever the
+core state changes (via the `_set_core_state` bridge).
+
 ## What remains / honest limits
 
-- No GUI screenshot verification of the full app is possible in the
-  Linux build environment (no Windows desktop); the widget itself was
-  rendered under Xvfb in EXECUTING / LISTENING / ERROR states and the
-  frames inspected (see the build STATUS record). The full app window
-  layout with the placed hero core still needs one visual check on
-  the owner's Windows machine.
+- The full app *was* run under Xvfb on Linux for the overlay/HUD
+  unit (with a capture-only cursor-name shim — the app targets
+  Windows Tk cursor names) and the home view, the overlay orb in
+  EXECUTING (palette open) and LISTENING states were captured and
+  inspected. Still outstanding: one visual check on the owner's real
+  Windows desktop, where fonts, emoji buttons and true always-on-top
+  stacking behave natively. Under bare Xvfb there is no window
+  manager, so `-topmost` stacking above the main window could not be
+  exercised — the overlay had to be parked beside the main window
+  for its captures; on Windows the topmost flag is honoured by the
+  OS window manager.
 - Continuous listening / VAD / barge-in (spec Part 8) is a separate
   unit; the existing one-shot + wake-word voice flow is what drives
   LISTENING/SPEAKING today.
