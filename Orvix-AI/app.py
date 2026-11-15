@@ -7,6 +7,7 @@ import queue
 import re
 import threading
 import time
+import webbrowser
 from datetime import datetime
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
@@ -24,6 +25,11 @@ from orvix.overlay import (
     is_click, overlay_window_height, palette_open_geometry, submit_overlay_command,
 )
 from orvix.hud_data import build_hud_panels
+from orvix.home_data import (
+    GAUGE_START_DEG, PerfHistory, collect_system_stats, format_percent,
+    format_uptime, gauge_color, gauge_extent_deg, model_status_lines,
+    performance_caption, quick_action_tiles,
+)
 from orvix.control_center import build_snapshot as _build_control_center_snapshot
 from orvix.taskqueue import TaskQueue
 from orvix.router import BudgetTracker
@@ -96,12 +102,14 @@ class OrvixDesktop:
         self._speech_active = threading.Event()
         self._hero_core: FloatingCoreWidget | None = None
         self._hud_core: FloatingCoreWidget | None = None
+        self._perf_history = PerfHistory(maxlen=48)
+        self._entry_placeholder_active = False
         self._configure_styles()
         self._prepare_avatar_images()
         self._build_ui()
         self._build_floating_hud()
         self.root.bind_all("<Control-Shift-j>", self._floating_hud_hotkey)
-        self._write_message("ORVIX", "হ্যালো! আমি তোমার ORVIX Desktop Assistant. তিনটি character profile থেকে পছন্দ করো, বাংলা বা English-এ টাইপ করো অথবা TALK বোতামে ক্লিক করে বলো।\n\nচাইলে উপরের WAKE WORD mode চালু করে ‘Orvix’ বলেও নির্দেশনা দিতে পারো। শুরু করো: ‘Notepad kholo’, ‘YouTube kholo’, ‘Downloads kholo’, অথবা AI model connect করে আমাকে আরও জটিল কাজ দাও।", "assistant")
+        self._write_message("ORVIX", "হ্যালো! আমি তোমার ORVIX Desktop Assistant. তিনটি character profile থেকে পছন্দ করো, বাংলা বা English-এ টাইপ করো অথবা নিচের mic বোতামে ক্লিক করে বলো।\n\nচাইলে উপরের WAKE WORD mode চালু করে ‘Orvix’ বলেও নির্দেশনা দিতে পারো। শুরু করো: ‘Notepad kholo’, ‘YouTube kholo’, ‘Downloads kholo’, অথবা AI model connect করে আমাকে আরও জটিল কাজ দাও।", "assistant")
         self._write_message("SYSTEM", "নিরাপত্তা: file read/create/copy/move/rename বা Recycle Bin-এ পাঠানোর আগে আমি নির্দিষ্ট action-এর অনুমতি চাইব। File read করলে contents AI provider-এ যেতে পারে। arbitrary PowerShell/terminal command চালানো হয় না।", "system")
         if self._startup_recovered_task_count:
             self._write_message(
@@ -692,13 +700,26 @@ class OrvixDesktop:
         self.selected_character = selected if selected in self.characters else "luna"
         self.avatar_images: dict[str, object] = {}
         self.small_avatar_images: dict[str, object] = {}
+        self.card_avatar_images: dict[str, object] = {}
         self.avatar_pil_images: dict[str, object] = {}
         self.character_cards: dict[str, tk.Frame] = {}
         try:
             from PIL import Image, ImageOps, ImageTk
-            root = Path(__file__).resolve().parent / "assets" / "characters" / "reference"
+            base = Path(__file__).resolve().parent
+            roots = [base / "assets" / "characters" / "reference"]
+            # Defensive: the reference JPGs may still live in a sibling
+            # app folder whose move into this folder is a separate owner
+            # step. Discover any sibling folder that actually holds them
+            # instead of assuming its name or failing to find portraits.
+            for sibling in sorted(base.parent.glob("*/assets/characters/reference")):
+                if sibling not in roots:
+                    roots.append(sibling)
             for key, definition in self.characters.items():
-                path = root / definition["image"]
+                path = next(
+                    (root / definition["image"] for root in roots
+                     if (root / definition["image"]).is_file()),
+                    roots[0] / definition["image"],
+                )
                 with Image.open(path) as source:
                     original = source.convert("RGB")
                     # Keep the full supplied image and aspect ratio; do not crop the avatar.
@@ -709,11 +730,14 @@ class OrvixDesktop:
                     self.avatar_images[key] = ImageTk.PhotoImage(stage)
                     thumb = ImageOps.contain(original, (68, 82), method=Image.Resampling.LANCZOS).convert("RGBA")
                     self.small_avatar_images[key] = ImageTk.PhotoImage(thumb)
+                    card = ImageOps.contain(original, (60, 68), method=Image.Resampling.LANCZOS).convert("RGBA")
+                    self.card_avatar_images[key] = ImageTk.PhotoImage(card)
         except Exception as exc:
             # Keep the application usable if a portrait can't be loaded.
             self.avatar_images = {}
             self.avatar_pil_images = {}
             self.small_avatar_images = {}
+            self.card_avatar_images = {}
             self._avatar_load_warning = str(exc)
 
     def _panel(self, parent: tk.Widget, bg: str = PANEL) -> tk.Frame:
@@ -763,22 +787,38 @@ class OrvixDesktop:
         nav = tk.Frame(top, bg="#050b17")
         nav.pack(side="left", padx=(24, 10), fill="y")
         self.nav_items: list[tk.Widget] = []
-        for label_text, color in [("AGENT", ACCENT), ("TASKS", MUTED), ("VOICE", MUTED)]:
-            label = tk.Label(nav, text=label_text, bg="#050b17", fg=color,
-                             font=("Segoe UI", 8, "bold"), padx=10)
-            label.pack(side="left", pady=26)
-            self.nav_items.append(label)
+        # Nav pills map to real entry points only: Home focuses the
+        # composer on this view, Tools lists the quick-action tools,
+        # Settings opens the settings window, About shows version info.
+        nav_defs = [
+            ("⌂  HOME", True, self._nav_home),
+            ("▦  TOOLS", False, self._quick_actions),
+            ("⚙  SETTINGS", False, self._open_settings),
+            ("ABOUT", False, self._open_about),
+        ]
+        for label_text, active, command in nav_defs:
+            pill_bg = "#0e2c3c" if active else "#050b17"
+            pill = tk.Frame(nav, bg=pill_bg,
+                            highlightbackground=ACCENT if active else "#1a3552",
+                            highlightthickness=1, bd=0, cursor="hand2")
+            pill.pack(side="left", padx=3, pady=20)
+            pill_text = tk.Label(pill, text=label_text, bg=pill_bg,
+                                 fg=ACCENT if active else MUTED,
+                                 font=("Segoe UI Semibold", 8, "bold"),
+                                 padx=10, pady=5, cursor="hand2")
+            pill_text.pack()
+            for widget in (pill, pill_text):
+                widget.bind("<Button-1>", lambda _e, cmd=command: cmd())
+            self.nav_items.append(pill)
         self.nav_bar = nav
 
         self.clock_label = tk.Label(top, text="--:--:--\n---, -- ---", bg="#050b17", fg="#d8eafa",
                                     font=("Consolas", 10, "bold"), justify="right",
                                     anchor="e", width=13)
         self.clock_label.pack(side="right", padx=(10, 20))
-        self.wake_btn = tk.Button(top, text="WAKE WORD: OFF", command=self._toggle_wake_word,
-                                  bg="#122137", fg="#c4d4e8", activebackground="#263e58",
-                                  activeforeground=TEXT, relief="flat", bd=0,
-                                  font=("Segoe UI Semibold", 8, "bold"), padx=10, pady=9, cursor="hand2")
-        self.wake_btn.pack(side="right", padx=4, pady=17)
+        # Endpoint pill: text comes from _model_status_text, which only
+        # reports the configured endpoint kind (local vs remote) — it
+        # never claims a live connection that was not checked.
         self.model_status = tk.Label(top, text=self._model_status_text(), bg="#0e2c3c", fg=ACCENT,
                                      font=("Segoe UI", 8, "bold"), padx=11, pady=8)
         self.model_status.pack(side="right", padx=8, pady=17)
@@ -787,41 +827,69 @@ class OrvixDesktop:
                                   activeforeground=TEXT, relief="flat", bd=0,
                                   font=("Segoe UI Semibold", 8, "bold"), padx=10, pady=9, cursor="hand2")
         floating_btn.pack(side="right", padx=5, pady=17)
-        settings_btn = tk.Button(top, text="⚙ SETTINGS", command=self._open_settings,
-                                 bg="#122137", fg=TEXT, activebackground="#263e58",
-                                 activeforeground=TEXT, relief="flat", bd=0,
-                                 font=("Segoe UI Semibold", 8, "bold"), padx=12, pady=9, cursor="hand2")
-        settings_btn.pack(side="right", padx=5, pady=17)
 
         body = tk.Frame(self.root, bg=BG)
-        body.pack(fill="both", expand=True, padx=10, pady=10)
+        # NOTE: body is packed at the very end of _build_ui, after the
+        # bottom command bar and footer, so the packer carves those
+        # fixed-height strips out of the window first and the expanding
+        # body fills what remains — packing it here would starve them.
         body.grid_columnconfigure(1, weight=1)
         body.grid_rowconfigure(0, weight=1)
 
         # Left rail — system status and selectable humanoid characters
-        left = tk.Frame(body, bg=BG, width=226)
+        left = tk.Frame(body, bg=BG, width=250)
         self.left_rail = left
         left.grid(row=0, column=0, sticky="ns", padx=(0, 9))
         left.grid_propagate(False)
 
         overview = self._panel(left)
         overview.pack(fill="x", pady=(0, 9))
-        self._panel_title(overview, "System overview", "LIVE")
-        stat_pad = tk.Frame(overview, bg=PANEL)
-        stat_pad.pack(fill="x", padx=13, pady=(0, 12))
-        self.cpu_value = tk.Label(stat_pad, text="CPU  --%", bg=PANEL, fg=TEXT,
-                                  font=("Segoe UI", 9, "bold"))
-        self.cpu_value.pack(fill="x", anchor="w")
-        self.cpu_bar = tk.Canvas(stat_pad, height=5, bg="#071326", highlightthickness=0)
-        self.cpu_bar.pack(fill="x", pady=(4, 8))
-        self.mem_value = tk.Label(stat_pad, text="MEMORY  --%", bg=PANEL, fg=TEXT,
-                                  font=("Segoe UI", 9, "bold"))
-        self.mem_value.pack(fill="x", anchor="w")
-        self.mem_bar = tk.Canvas(stat_pad, height=5, bg="#071326", highlightthickness=0)
-        self.mem_bar.pack(fill="x", pady=(4, 8))
-        self.os_value = tk.Label(stat_pad, text=f"Windows · {platform.machine()}", bg=PANEL,
-                                 fg=MUTED, font=("Segoe UI", 8))
-        self.os_value.pack(anchor="w", pady=(2, 0))
+        overview_title = tk.Frame(overview, bg=PANEL)
+        overview_title.pack(fill="x", padx=13, pady=(10, 6))
+        tk.Label(overview_title, text="SYSTEM OVERVIEW", bg=PANEL, fg=TEXT,
+                 font=("Segoe UI Semibold", 9, "bold")).pack(side="left")
+        # LIVE only while real counters are being read; _refresh_stats
+        # flips this to N/A when no gauge source is available.
+        self.sys_live_label = tk.Label(overview_title, text="● LIVE", bg=PANEL, fg=GREEN,
+                                       font=("Segoe UI", 8, "bold"))
+        self.sys_live_label.pack(side="right")
+        gauges = tk.Frame(overview, bg=PANEL)
+        gauges.pack(fill="x", padx=10, pady=(0, 2))
+        self.gauge_canvases: dict[str, tk.Canvas] = {}
+        self.gauge_captions: dict[str, tk.Label] = {}
+        for col, (kind, caption) in enumerate(
+                (("cpu", "CPU"), ("ram", "RAM"), ("storage", "STORAGE"))):
+            cell = tk.Frame(gauges, bg=PANEL)
+            cell.grid(row=0, column=col, padx=2)
+            gauges.grid_columnconfigure(col, weight=1)
+            gauge = tk.Canvas(cell, width=54, height=54, bg=PANEL, highlightthickness=0)
+            gauge.pack()
+            caption_label = tk.Label(cell, text=caption, bg=PANEL, fg=MUTED,
+                                     font=("Segoe UI", 7, "bold"))
+            caption_label.pack(pady=(1, 0))
+            self.gauge_canvases[kind] = gauge
+            self.gauge_captions[kind] = caption_label
+        # Text handles kept for the stat refresh path.
+        self.cpu_value = self.gauge_captions["cpu"]
+        self.mem_value = self.gauge_captions["ram"]
+        # Windows Info strip: real platform data only (name/edition,
+        # build, uptime) — refreshed by _refresh_stats from
+        # orvix.home_data.collect_system_stats.
+        win_box = tk.Frame(overview, bg="#0d1729", highlightbackground=BORDER, highlightthickness=1)
+        win_box.pack(fill="x", padx=13, pady=(4, 8))
+        tk.Label(win_box, text="WINDOWS INFO", bg="#0d1729", fg=ACCENT,
+                 font=("Segoe UI", 7, "bold")).pack(anchor="w", padx=9, pady=(7, 2))
+        self.os_value = tk.Label(win_box, text="—", bg="#0d1729", fg=TEXT,
+                                 font=("Segoe UI", 8, "bold"), anchor="w",
+                                 wraplength=205, justify="left")
+        self.os_value.pack(fill="x", padx=9)
+        self.build_value = tk.Label(win_box, text="Build: —", bg="#0d1729", fg=MUTED,
+                                    font=("Segoe UI", 8), anchor="w",
+                                    wraplength=205, justify="left")
+        self.build_value.pack(fill="x", padx=9)
+        self.uptime_value = tk.Label(win_box, text="Uptime  —", bg="#0d1729", fg=MUTED,
+                                     font=("Segoe UI", 8), anchor="w")
+        self.uptime_value.pack(fill="x", padx=9, pady=(1, 8))
 
         # Control Center panel — HUD data from real state only: the
         # orvix Control Center snapshot (agents, providers, background
@@ -832,14 +900,14 @@ class OrvixDesktop:
         hud_panel.pack(fill="x", pady=(0, 9))
         self._panel_title(hud_panel, "Control center", "LIVE DATA")
         hud_pad = tk.Frame(hud_panel, bg=PANEL)
-        hud_pad.pack(fill="x", padx=13, pady=(0, 10))
+        hud_pad.pack(fill="x", padx=13, pady=(0, 6))
         self.hud_stat_labels: dict[str, tk.Label] = {}
         for key in ("agents", "models", "health", "queue", "budget", "memory"):
             stat = tk.Label(hud_pad, text=f"{key.upper()}  —", bg=PANEL, fg=MUTED,
                             font=("Consolas", 8), anchor="w")
             stat.pack(fill="x", anchor="w", pady=1)
             self.hud_stat_labels[key] = stat
-        tk.Frame(hud_pad, bg=BORDER, height=1).pack(fill="x", pady=(6, 5))
+        tk.Frame(hud_pad, bg=BORDER, height=1).pack(fill="x", pady=(4, 3))
         tk.Label(hud_pad, text="EXECUTION LOG", bg=PANEL, fg="#7e91ab",
                  font=("Segoe UI", 7, "bold")).pack(anchor="w")
         self.hud_log_labels: list[tk.Label] = []
@@ -853,35 +921,39 @@ class OrvixDesktop:
         char_panel = self._panel(left)
         char_panel.pack(fill="x", pady=(0, 9))
         self._panel_title(char_panel, "Choose your character", "3 PROFILES")
-        tk.Label(char_panel, text="Pick the personality you want on screen.", bg=PANEL,
-                 fg=MUTED, font=("Segoe UI", 8), wraplength=190, justify="left").pack(anchor="w", padx=13, pady=(0, 8))
         gallery = tk.Frame(char_panel, bg=PANEL)
         gallery.pack(fill="x", padx=8, pady=(0, 9))
-        for key in self.characters:
+        self.character_dots: dict[str, tk.Label] = {}
+        for col, key in enumerate(self.characters):
             card = tk.Frame(gallery, bg=CARD, highlightbackground="#263a56", highlightthickness=1, bd=0, cursor="hand2")
             self.character_cards[key] = card
-            row = list(self.characters).index(key) // 2
-            col = list(self.characters).index(key) % 2
-            card.grid(row=row, column=col, sticky="nsew", padx=4, pady=4)
+            card.grid(row=0, column=col, sticky="nsew", padx=3, pady=2)
             gallery.grid_columnconfigure(col, weight=1)
-            image = self.small_avatar_images.get(key)
+            image = self.card_avatar_images.get(key) or self.small_avatar_images.get(key)
             if image:
                 avatar = tk.Label(card, image=image, bg=CARD, cursor="hand2")
                 avatar.image = image
             else:
                 avatar = tk.Label(card, text=key[:1].upper(), bg=CARD, fg=ACCENT,
-                                  font=("Segoe UI Black", 26, "bold"), width=3, height=2, cursor="hand2")
-            avatar.pack(pady=(7, 2))
+                                  font=("Segoe UI Black", 22, "bold"), width=3, height=2, cursor="hand2")
+            avatar.pack(pady=(6, 1))
             name = tk.Label(card, text=self.characters[key]["name"], bg=CARD, fg=TEXT,
                             font=("Segoe UI", 8, "bold"), cursor="hand2")
-            name.pack(pady=(0, 7))
-            for widget in (card, avatar, name):
+            name.pack()
+            role = tk.Label(card, text=self.characters[key]["role"], bg=CARD, fg=MUTED,
+                            font=("Segoe UI", 6), wraplength=68, justify="center", cursor="hand2")
+            role.pack(pady=(0, 1))
+            dot = tk.Label(card, text="○", bg=CARD, fg=MUTED,
+                           font=("Segoe UI", 9), cursor="hand2")
+            dot.pack(pady=(0, 6))
+            self.character_dots[key] = dot
+            for widget in (card, avatar, name, role, dot):
                 widget.bind("<Button-1>", lambda _e, k=key: self._select_character(k))
         self._refresh_character_cards()
         tk.Button(char_panel, text="◈  OPEN REAL 3D AVATAR STUDIO", command=self._open_avatar_studio,
                   bg="#0b2a40", fg=ACCENT, activebackground="#16415b", activeforeground=TEXT,
                   relief="flat", bd=0, font=("Segoe UI Semibold", 8, "bold"),
-                  padx=8, pady=10, cursor="hand2").pack(fill="x", padx=11, pady=(0, 12))
+                  padx=8, pady=8, cursor="hand2").pack(fill="x", padx=11, pady=(0, 10))
 
         tools_panel = self._panel(left)
         tools_panel.pack(fill="both", expand=True)
@@ -915,22 +987,34 @@ class OrvixDesktop:
         hero = self._panel(center, bg="#061020")
         hero.pack(fill="x", pady=(0, 9))
         hero.pack_propagate(False)
-        hero.configure(height=min(386, max(300, int(self.root.winfo_height() * 0.44))))
+        hero.configure(height=min(452, max(368, int(initial_h * 0.52))))
         hero_head = tk.Frame(hero, bg="#061020")
         hero_head.pack(fill="x", padx=15, pady=(11, 4))
         tk.Label(hero_head, text="ORVIX  /  AI AGENT CORE", bg="#061020", fg=TEXT,
                  font=("Segoe UI Semibold", 10, "bold")).pack(side="left")
         tk.Label(hero_head, text="PLAN · ACT · VERIFY", bg="#061020", fg="#7291b3",
                  font=("Segoe UI", 7, "bold")).pack(side="right")
-        self.core_canvas = tk.Canvas(hero, bg="#061020", highlightthickness=0, height=320)
-        self.core_canvas.pack(fill="both", expand=True, padx=5, pady=(0, 5))
+        self.core_canvas = tk.Canvas(hero, bg="#061020", highlightthickness=0, height=300)
+        self.core_canvas.pack(fill="both", expand=True, padx=5, pady=(0, 2))
         self.core_canvas.bind("<Configure>", lambda _e: self._render_core())
+        # Logotype block under the core (mockup centre): wordmark,
+        # subtitle and the Speak / Command / Get Results chip.
+        logo_row = tk.Frame(hero, bg="#061020")
+        logo_row.pack(fill="x", pady=(0, 10))
+        tk.Label(logo_row, text="ORVIX", bg="#061020", fg=TEXT,
+                 font=("Segoe UI Semibold", 19, "bold")).pack()
+        tk.Label(logo_row, text="AI AGENT ASSISTANT", bg="#061020", fg=ACCENT,
+                 font=("Segoe UI", 8, "bold")).pack(pady=(0, 5))
+        tk.Label(logo_row, text="Speak  •  Command  •  Get Results", bg="#0e2c3c",
+                 fg="#a5f3fc", font=("Segoe UI Semibold", 8, "bold"),
+                 padx=12, pady=4).pack()
         # Animated Floating AI Core: a living energy core replaces the old
         # static avatar-rig circle in the hero. It is a sibling canvas over
         # the hero panel; _render_core keeps drawing grid/callouts/waveform
-        # on core_canvas underneath it.
-        self._hero_core = FloatingCoreWidget(hero, size=250, bg="#061020")
-        self._hero_core.canvas.place(relx=0.15, rely=0.56, anchor="center")
+        # on core_canvas underneath it. The core sits centred and dominant,
+        # above the logotype block.
+        self._hero_core = FloatingCoreWidget(hero, size=270, bg="#061020")
+        self._hero_core.canvas.place(relx=0.5, rely=0.44, anchor="center")
         self._hero_core.set_level_provider(self._core_audio_level)
         self._hero_core.start()
         self.core_mode = "READY"
@@ -966,18 +1050,8 @@ class OrvixDesktop:
         self.chat.tag_configure("body", foreground=TEXT, lmargin1=0, lmargin2=0, spacing1=2, spacing3=5)
         self.chat.tag_configure("system_body", foreground=MUTED, font=("Segoe UI", 8), lmargin1=0, spacing3=4)
 
-        composer = tk.Frame(center, bg="#050b17", highlightbackground="#1b3756", highlightthickness=1)
-        composer.pack(fill="x", pady=(0, 0))
-        tk.Label(composer, text="COMMAND", bg="#050b17", fg=ACCENT,
-                 font=("Segoe UI", 7, "bold")).pack(side="left", padx=(12, 8))
-        self.entry = ttk.Entry(composer, font=("Segoe UI", 10))
-        self.entry.pack(side="left", fill="x", expand=True, ipady=6, pady=7, padx=(0, 8))
-        self.entry.bind("<Return>", lambda _e: self._send_from_entry())
-        self.mic_btn = ttk.Button(composer, text="🎙  TALK", style="Mic.TButton", command=self._listen)
-        self.mic_btn.pack(side="left", padx=(0, 7), pady=6)
-        self.send_btn = ttk.Button(composer, text="SEND  ➤", style="Accent.TButton", command=self._send_from_entry)
-        self.send_btn.pack(side="left", padx=(0, 8), pady=6)
-        self.entry.focus_set()
+        # The composer lives in the full-width bottom command bar
+        # (built below, after the right rail) — see _build_ui bottom bar.
 
         # Right rail — actual quick commands, activity and AI setup
         right = tk.Frame(body, bg=BG, width=250)
@@ -986,21 +1060,45 @@ class OrvixDesktop:
         right.grid_propagate(False)
         actions = self._panel(right)
         actions.pack(fill="x", pady=(0, 9))
-        self._panel_title(actions, "Quick actions", "ONE CLICK")
-        quick_items = [
-            ("🎙  VOICE COMMAND", None, self._listen),
-            ("▣  OPEN NOTEPAD", "Notepad kholo", None),
-            ("▦  OPEN CALCULATOR", "Calculator kholo", None),
-            ("◎  OPEN YOUTUBE", "YouTube kholo", None),
-            ("▤  OPEN DOWNLOADS", "Downloads kholo", None),
-            ("⌕  SYSTEM INFORMATION", "system information", None),
-        ]
-        for label, command, callback in quick_items:
-            btn = tk.Button(actions, text=label, command=callback if callback else lambda c=command: self._send_text(c or ""),
+        qa_title = tk.Frame(actions, bg=PANEL)
+        qa_title.pack(fill="x", padx=13, pady=(12, 9))
+        tk.Label(qa_title, text="QUICK ACTIONS", bg=PANEL, fg=TEXT,
+                 font=("Segoe UI Semibold", 9, "bold")).pack(side="left")
+        see_all = tk.Label(qa_title, text="SEE ALL →", bg=PANEL, fg=ACCENT,
+                           font=("Segoe UI", 8, "bold"), cursor="hand2")
+        see_all.pack(side="right")
+        see_all.bind("<Button-1>", lambda _e: self._quick_actions())
+        # Icon grid (2 x 3): glyphs are drawn with Canvas primitives in
+        # _draw_quick_glyph — no external icon assets. Every tile routes
+        # its command text through _send_text, the same pipeline (and
+        # approval gates) as typed commands.
+        qa_grid = tk.Frame(actions, bg=PANEL)
+        qa_grid.pack(fill="x", padx=9, pady=(0, 4))
+        for idx, tile in enumerate(quick_action_tiles()):
+            row, col = divmod(idx, 2)
+            cell = tk.Frame(qa_grid, bg=CARD, highlightbackground="#263a56",
+                            highlightthickness=1, bd=0, cursor="hand2")
+            cell.grid(row=row, column=col, sticky="nsew", padx=3, pady=2)
+            qa_grid.grid_columnconfigure(col, weight=1)
+            glyph = tk.Canvas(cell, width=36, height=36, bg=CARD,
+                              highlightthickness=0, cursor="hand2")
+            glyph.pack(pady=(6, 0))
+            self._draw_quick_glyph(glyph, tile.key)
+            tile_label = tk.Label(cell, text=tile.label, bg=CARD, fg="#d8eafa",
+                                  font=("Segoe UI Semibold", 8, "bold"), cursor="hand2")
+            tile_label.pack(pady=(1, 6))
+            for widget in (cell, glyph, tile_label):
+                widget.bind("<Button-1>", lambda _e, c=tile.command: self._send_text(c))
+        # Existing quick commands that are not part of the mockup grid
+        # stay available as compact buttons — nothing is dropped.
+        for label, command in [("▤  OPEN DOWNLOADS", "Downloads kholo"),
+                               ("⌕  SYSTEM INFORMATION", "system information")]:
+            btn = tk.Button(actions, text=label, command=lambda c=command: self._send_text(c),
                             bg="#0e1d32", fg="#d8eafa", activebackground="#16415b", activeforeground="#ffffff",
                             relief="flat", bd=0, anchor="w", font=("Segoe UI Semibold", 8, "bold"),
-                            padx=10, pady=9, cursor="hand2")
+                            padx=10, pady=7, cursor="hand2")
             btn.pack(fill="x", padx=11, pady=3)
+        tk.Frame(actions, bg=PANEL, height=5).pack()
 
         task_panel = self._panel(right)
         task_panel.pack(fill="x", pady=(0, 9))
@@ -1053,6 +1151,26 @@ class OrvixDesktop:
         self.llm_detail_label = tk.Label(llm_panel, text=f"{self.settings.get('model', 'qwen2.5:3b')}\n{self.settings.get('api_base_url', '')}",
                  bg=PANEL, fg=MUTED, font=("Segoe UI", 8), wraplength=215, justify="left")
         self.llm_detail_label.pack(anchor="w", padx=13, pady=(0, 7))
+        # Status lines assembled by orvix.home_data.model_status_lines
+        # from real state only (endpoint configuration, live core mode,
+        # wake-word flag, installed TTS engines; internet is honestly
+        # "Not checked" — the home page never probes the network).
+        # Refreshed together with the HUD panels.
+        self.model_line_labels: dict[str, tk.Label] = {}
+        self.model_dot_labels: dict[str, tk.Label] = {}
+        model_lines_box = tk.Frame(llm_panel, bg=PANEL)
+        model_lines_box.pack(fill="x", padx=13, pady=(0, 8))
+        for line_key in ("ENDPOINT", "INTERNET", "AI CORE", "VOICE", "TTS"):
+            line_row = tk.Frame(model_lines_box, bg=PANEL)
+            line_row.pack(fill="x", pady=1)
+            dot = tk.Label(line_row, text="●", bg=PANEL, fg=MUTED, font=("Segoe UI", 8))
+            dot.pack(side="left")
+            tk.Label(line_row, text=f"{line_key}:", bg=PANEL, fg=MUTED,
+                     font=("Segoe UI", 8, "bold")).pack(side="left", padx=(4, 4))
+            value = tk.Label(line_row, text="—", bg=PANEL, fg=TEXT, font=("Segoe UI", 8))
+            value.pack(side="left")
+            self.model_line_labels[line_key] = value
+            self.model_dot_labels[line_key] = dot
         tk.Button(llm_panel, text="CONFIGURE AI MODEL  →", command=self._open_settings,
                   bg="#13344a", fg=ACCENT, activebackground="#1d4d67", activeforeground=TEXT,
                   relief="flat", bd=0, font=("Segoe UI", 8, "bold"), padx=10, pady=9,
@@ -1072,11 +1190,91 @@ class OrvixDesktop:
         footer = tk.Frame(self.root, bg="#050b17", height=27)
         footer.pack(fill="x", side="bottom")
         footer.pack_propagate(False)
-        self.footer_status_label = tk.Label(footer, text="● SYSTEM READY", bg="#050b17", fg=GREEN,
+        tk.Label(footer, text="ORVIX  •  Built with ❤ for a Smarter Tomorrow",
+                 bg="#050b17", fg="#637b98", font=("Segoe UI", 7)).pack(side="left", padx=16, pady=6)
+        github_link = tk.Label(footer, text="GITHUB ↗", bg="#050b17", fg=ACCENT,
+                               font=("Segoe UI", 7, "bold"), cursor="hand2")
+        github_link.pack(side="right", padx=16, pady=6)
+        github_link.bind("<Button-1>", lambda _e: webbrowser.open("https://github.com/zobaerio/orvixai"))
+        footer_center = tk.Frame(footer, bg="#050b17")
+        footer_center.pack(side="left", fill="x", expand=True)
+        footer_inner = tk.Frame(footer_center, bg="#050b17")
+        footer_inner.pack()
+        self.footer_status_label = tk.Label(footer_inner, text="● SYSTEM READY", bg="#050b17", fg=GREEN,
                  font=("Segoe UI", 7, "bold"))
-        self.footer_status_label.pack(side="left", padx=16, pady=6)
-        tk.Label(footer, text="zobaerio  ·  ORVIX Desktop AI  ·  SAFE LOCAL CONTROLS",
-                 bg="#050b17", fg="#637b98", font=("Segoe UI", 7)).pack(side="right", padx=16, pady=6)
+        self.footer_status_label.pack(side="left", padx=(0, 10))
+        tk.Label(footer_inner, text="Engineering Precision. Digital Innovation.",
+                 bg="#050b17", fg="#637b98", font=("Segoe UI", 7, "italic")).pack(side="left")
+
+        # Bottom command bar (mockup bottom strip): Voice Control on
+        # the left, the composer with the big circular mic in the
+        # centre, Live Performance on the right. The footer above was
+        # packed first, so this bar sits directly over it.
+        bottom_bar = tk.Frame(self.root, bg="#050b17", height=100,
+                              highlightbackground="#1a3552", highlightthickness=1)
+        bottom_bar.pack(fill="x", side="bottom")
+        bottom_bar.pack_propagate(False)
+
+        voice_panel = tk.Frame(bottom_bar, bg="#050b17", width=250)
+        voice_panel.pack(side="left", fill="y", padx=(14, 6), pady=6)
+        voice_panel.pack_propagate(False)
+        tk.Label(voice_panel, text="🎙  VOICE CONTROL", bg="#050b17", fg=TEXT,
+                 font=("Segoe UI Semibold", 8, "bold")).pack(anchor="w")
+        self.wave_canvas = tk.Canvas(voice_panel, height=16, bg="#050b17", highlightthickness=0)
+        self.wave_canvas.pack(fill="x", pady=(4, 2))
+        wake_row = tk.Frame(voice_panel, bg="#050b17")
+        wake_row.pack(fill="x")
+        tk.Label(wake_row, text="Wake Word:", bg="#050b17", fg=MUTED,
+                 font=("Segoe UI", 8)).pack(side="left")
+        tk.Label(wake_row, text="Hey ORVIX", bg="#0e2c3c", fg=ACCENT,
+                 font=("Segoe UI Semibold", 8, "bold"), padx=8, pady=2).pack(side="left", padx=(6, 0))
+        # The wake-word toggle itself moved here from the top bar; it
+        # is the same button _toggle_wake_word has always driven.
+        self.wake_btn = tk.Button(voice_panel, text="WAKE WORD: OFF", command=self._toggle_wake_word,
+                                  bg="#122137", fg="#c4d4e8", activebackground="#263e58",
+                                  activeforeground=TEXT, relief="flat", bd=0,
+                                  font=("Segoe UI Semibold", 7, "bold"), padx=8, pady=3, cursor="hand2")
+        self.wake_btn.pack(anchor="w", pady=(4, 0))
+
+        perf_panel = tk.Frame(bottom_bar, bg="#050b17", width=250)
+        perf_panel.pack(side="right", fill="y", padx=(6, 14), pady=8)
+        perf_panel.pack_propagate(False)
+        tk.Label(perf_panel, text="▥  LIVE PERFORMANCE", bg="#050b17", fg=TEXT,
+                 font=("Segoe UI Semibold", 8, "bold")).pack(anchor="w")
+        self.perf_canvas = tk.Canvas(perf_panel, height=44, bg="#050b17", highlightthickness=0)
+        self.perf_canvas.pack(fill="x", pady=(5, 2))
+        self.perf_caption = tk.Label(perf_panel, text="N/A", bg="#050b17", fg=MUTED,
+                                     font=("Consolas", 8))
+        self.perf_caption.pack(anchor="w")
+
+        composer = tk.Frame(bottom_bar, bg="#050b17")
+        composer.pack(side="left", fill="both", expand=True, padx=8, pady=10)
+        mic_wrap = tk.Frame(composer, bg="#050b17")
+        mic_wrap.pack(side="left", padx=(2, 10))
+        mic_ring = tk.Canvas(mic_wrap, width=62, height=62, bg="#050b17", highlightthickness=0)
+        mic_ring.pack()
+        mic_ring.create_oval(3, 3, 59, 59, outline=ACCENT, width=2)
+        mic_ring.create_oval(9, 9, 53, 53, outline="#155e75", width=1)
+        self.mic_btn = tk.Button(mic_wrap, text="🎙", command=self._listen,
+                                 bg="#164e63", fg="#a5f3fc", activebackground="#155e75",
+                                 activeforeground="#ffffff", relief="flat", bd=0,
+                                 font=("Segoe UI", 14), cursor="hand2", width=2)
+        self.mic_btn.place(relx=0.5, rely=0.5, anchor="center")
+        entry_box = tk.Frame(composer, bg="#081425", highlightbackground="#27405c", highlightthickness=1)
+        entry_box.pack(side="left", fill="both", expand=True)
+        self.entry = tk.Entry(entry_box, font=("Segoe UI", 10), bg="#081425", fg=MUTED,
+                              insertbackground=TEXT, relief="flat", bd=0, highlightthickness=0)
+        self.entry.pack(fill="both", expand=True, padx=10, pady=6)
+        self.entry.bind("<Return>", lambda _e: self._send_from_entry())
+        self.entry.bind("<FocusIn>", self._entry_focus_in)
+        self.entry.bind("<FocusOut>", self._entry_focus_out)
+        self._show_entry_placeholder()
+        self.send_btn = ttk.Button(composer, text="SEND  ➤", style="Accent.TButton", command=self._send_from_entry)
+        self.send_btn.pack(side="left", padx=(10, 2), pady=6)
+        self.entry.focus_set()
+
+        # Pack the expanding body last (see note at its creation).
+        body.pack(fill="both", expand=True, padx=10, pady=10)
 
         self._update_clock()
         self._refresh_stats()
@@ -1122,7 +1320,7 @@ class OrvixDesktop:
             self._nav_collapsed = True
         elif width >= 1120 and self._nav_collapsed:
             for item in self.nav_items:
-                item.pack(side="left", pady=26)
+                item.pack(side="left", padx=3, pady=20)
             self._nav_collapsed = False
 
         if hasattr(self, "core_canvas"):
@@ -1148,38 +1346,27 @@ class OrvixDesktop:
         # Keep the widget sized to the hero panel.
         if getattr(self, "_hero_core", None) is not None:
             try:
-                self._hero_core.resize(max(170, min(260, height - 56)))
+                self._hero_core.resize(max(180, min(300, height - 24)))
             except Exception:
                 pass
-        # Core callout
-        text_x = min(width - 20, int(width * 0.62))
-        compact_canvas = width < 520
-        canvas.create_text(text_x, int(height * 0.28), text="AI AGENT" if compact_canvas else "PLAN. ACT.", anchor="w",
-                           fill="#f3f8ff", font=("Segoe UI Semibold", 14 if compact_canvas else 17, "bold"))
-        canvas.create_text(text_x, int(height * 0.28) + 27,
-                           text="THINK · DO · VERIFY" if compact_canvas else "VERIFY. COMPLETE.",
-                           anchor="w", fill=ACCENT, font=("Segoe UI Semibold", 9 if compact_canvas else 10, "bold"))
+        # Callouts live in the top corners: the core is centred now, so
+        # the old right-hand text block would sit behind it. Character
+        # (left) and live mode (right) are both real app state.
         char = self.characters[self.selected_character]
-        canvas.create_text(text_x, int(height * 0.28) + 60,
-                           text=f"{char['name']}  ·  {char['role']}", anchor="w",
+        canvas.create_text(16, 14, text=f"{char['name']}  ·  {char['role']}", anchor="w",
                            fill="#a9c3dc", font=("Segoe UI", 9))
-        canvas.create_line(text_x, int(height * 0.28) + 80, min(width-20, text_x+190), int(height * 0.28)+80,
-                           fill="#234360", width=1)
         mode = getattr(self, "core_mode", "READY").replace("●", "").strip().upper()
         mode_color = ORANGE if any(w in mode for w in ("LISTEN", "THINK", "EXECUT")) else GREEN
-        canvas.create_oval(text_x, int(height * 0.28)+96, text_x+8, int(height * 0.28)+104,
-                           fill=mode_color, outline="")
-        canvas.create_text(text_x+16, int(height * 0.28)+100, text=mode or "READY",
-                           anchor="w", fill=mode_color, font=("Consolas", 9, "bold"))
-        canvas.create_text(text_x, int(height * 0.28)+128, text="VOICE  ·  APPS  ·  WEB  ·  FILES",
-                           anchor="w", fill="#6683a0", font=("Segoe UI", 8, "bold"))
-        # Signal waveform at bottom-right
-        wave_x = text_x
-        wave_y = min(height-23, int(height*0.82))
-        available = max(130, width - text_x - 28)
-        for i in range(min(34, int(available / 5))):
+        canvas.create_oval(width - 20, 10, width - 12, 18, fill=mode_color, outline="")
+        canvas.create_text(width - 26, 14, text=mode or "READY",
+                           anchor="e", fill=mode_color, font=("Consolas", 9, "bold"))
+        # Signal waveform strip along the bottom centre
+        wave_y = height - 14
+        bars = 34
+        start_x = max(16, (width - bars * 5) // 2)
+        for i in range(bars):
             amp = 3 + abs(math.sin(phase * 2 + i * 0.48)) * (8 + (i % 5) * 2)
-            xx = wave_x + i * 5
+            xx = start_x + i * 5
             canvas.create_line(xx, wave_y-amp/2, xx, wave_y+amp/2,
                                fill="#1a789d" if i % 3 else ACCENT, width=2)
 
@@ -1192,6 +1379,7 @@ class OrvixDesktop:
             self._blink_frames = 1
             self._next_blink_phase = self._animation_phase + 2.5 + ((int(self._animation_phase * 10) % 11) / 50.0)
         self._render_core()
+        self._draw_voice_wave()
         self.root.after(120, self._animate_core)
 
     def _refresh_character_cards(self) -> None:
@@ -1209,6 +1397,13 @@ class OrvixDesktop:
                         child.configure(fg=ACCENT if selected else TEXT)
                 except tk.TclError:
                     pass
+        for key, dot in getattr(self, "character_dots", {}).items():
+            selected = key == self.selected_character
+            try:
+                dot.configure(text="●" if selected else "○",
+                              fg=ACCENT if selected else MUTED)
+            except tk.TclError:
+                pass
 
     def _open_avatar_studio(self) -> None:
         try:
@@ -1257,20 +1452,161 @@ class OrvixDesktop:
         self.root.after(1000, self._update_clock)
 
     def _refresh_stats(self) -> None:
+        """Refresh the System Overview gauges, Windows Info strip and
+        Live Performance bars from one real counter reading
+        (orvix.home_data.collect_system_stats). Unreadable counters
+        stay None and render as N/A — never as invented numbers."""
         if not self.root.winfo_exists():
             return
         try:
-            import psutil
-            cpu = int(psutil.cpu_percent(interval=None))
-            mem = int(psutil.virtual_memory().percent)
-            self.cpu_value.configure(text=f"CPU  {cpu}%")
-            self.mem_value.configure(text=f"MEMORY  {mem}%")
-            self._draw_bar(self.cpu_bar, cpu, ACCENT)
-            self._draw_bar(self.mem_bar, mem, ORANGE if mem >= 80 else "#55d6a7")
+            stats = collect_system_stats()
         except Exception:
-            self.cpu_value.configure(text="CPU  MONITOR N/A")
-            self.mem_value.configure(text="MEMORY  MONITOR N/A")
+            stats = None
+        if stats is not None and hasattr(self, "gauge_canvases"):
+            try:
+                self._draw_gauge("cpu", stats.cpu_percent)
+                self._draw_gauge("ram", stats.ram_percent)
+                self._draw_gauge("storage", stats.storage_percent)
+                self.gauge_captions["cpu"].configure(text=f"CPU · {format_percent(stats.cpu_percent)}")
+                self.gauge_captions["ram"].configure(text=f"RAM · {format_percent(stats.ram_percent)}")
+                self.gauge_captions["storage"].configure(text=f"STORAGE · {format_percent(stats.storage_percent)}")
+                if hasattr(self, "sys_live_label"):
+                    present = sum(1 for v in (stats.cpu_percent, stats.ram_percent,
+                                              stats.storage_percent) if v is not None)
+                    if present == 3:
+                        self.sys_live_label.configure(text="● LIVE", fg=GREEN)
+                    elif present:
+                        self.sys_live_label.configure(text="● PARTIAL", fg=ORANGE)
+                    else:
+                        self.sys_live_label.configure(text="● N/A", fg=MUTED)
+                if hasattr(self, "os_value"):
+                    self.os_value.configure(text=stats.os_name)
+                    self.build_value.configure(text=f"Build: {stats.os_build} · {stats.machine}")
+                    self.uptime_value.configure(text=f"Uptime  {format_uptime(stats.uptime_seconds)}")
+                self._perf_history.push(stats.cpu_percent, stats.ram_percent)
+                self._draw_perf_bars()
+            except tk.TclError:
+                pass
         self.root.after(1800, self._refresh_stats)
+
+    def _draw_gauge(self, kind: str, value: object) -> None:
+        """Draw one circular gauge: track ring, value arc, centre %."""
+        canvas = getattr(self, "gauge_canvases", {}).get(kind)
+        if canvas is None:
+            return
+        canvas.delete("all")
+        size = max(canvas.winfo_width(), 40)
+        box = (4, 4, size - 4, size - 4)
+        canvas.create_arc(*box, start=GAUGE_START_DEG, extent=-270.0, style="arc",
+                          outline="#1c2d46", width=5)
+        extent = gauge_extent_deg(value)
+        if extent:
+            canvas.create_arc(*box, start=GAUGE_START_DEG, extent=extent, style="arc",
+                              outline=gauge_color(kind, value), width=5)
+        canvas.create_text(size / 2, size / 2, text=format_percent(value), fill=TEXT,
+                           font=("Segoe UI Semibold", 9, "bold"))
+
+    def _draw_perf_bars(self) -> None:
+        """Live Performance bars from the rolling history of real CPU
+        samples collected by _refresh_stats. No samples yet (or all
+        unreadable) -> an honest N/A."""
+        canvas = getattr(self, "perf_canvas", None)
+        if canvas is None:
+            return
+        canvas.delete("all")
+        history = getattr(self, "_perf_history", None)
+        if history is None or not history.has_data:
+            canvas.create_text(6, 22, text="N/A", anchor="w", fill=MUTED,
+                               font=("Segoe UI", 8, "bold"))
+        else:
+            width = max(canvas.winfo_width(), 200)
+            bar_w, gap = 4, 2
+            shown = history.cpu_series()[-max(1, width // (bar_w + gap)):]
+            x = width - len(shown) * (bar_w + gap)
+            for value in shown:
+                if value is None:
+                    x += bar_w + gap
+                    continue
+                height = max(2.0, 40.0 * value / 100.0)
+                canvas.create_rectangle(x, 44 - height, x + bar_w, 44,
+                                        fill=ACCENT, outline="")
+                x += bar_w + gap
+        if hasattr(self, "perf_caption"):
+            self.perf_caption.configure(
+                text=performance_caption(history) if history is not None else "N/A")
+
+    def _draw_voice_wave(self) -> None:
+        """Waveform strip in the Voice Control panel. Same decorative,
+        state-independent animation the hero canvas has always drawn —
+        it is a UI motion element, not an audio measurement (the app
+        has no live level source; see _core_audio_level)."""
+        canvas = getattr(self, "wave_canvas", None)
+        if canvas is None:
+            return
+        try:
+            canvas.delete("all")
+            import math
+            phase = getattr(self, "_animation_phase", 0.0)
+            width = max(canvas.winfo_width(), 120)
+            for i in range(0, width - 4, 5):
+                amp = 2 + abs(math.sin(phase * 2.2 + i * 0.35)) * 5
+                canvas.create_line(i + 2, 8 - amp / 2, i + 2, 8 + amp / 2,
+                                   fill="#1a789d" if i % 15 else ACCENT, width=2)
+        except tk.TclError:
+            pass
+
+    # -- Composer placeholder ("Ask me anything...") -------------------
+    _ENTRY_PLACEHOLDER = "Ask me anything..."
+
+    def _show_entry_placeholder(self) -> None:
+        if not hasattr(self, "entry") or self.entry.get():
+            return
+        self._entry_placeholder_active = True
+        self.entry.insert(0, self._ENTRY_PLACEHOLDER)
+        self.entry.configure(fg=MUTED)
+
+    def _entry_focus_in(self, _event: tk.Event | None = None) -> None:
+        if getattr(self, "_entry_placeholder_active", False):
+            self._entry_placeholder_active = False
+            self.entry.delete(0, "end")
+            self.entry.configure(fg=TEXT)
+
+    def _entry_focus_out(self, _event: tk.Event | None = None) -> None:
+        if hasattr(self, "entry") and not self.entry.get().strip():
+            self.entry.delete(0, "end")
+            self._show_entry_placeholder()
+
+    @staticmethod
+    def _draw_quick_glyph(canvas: tk.Canvas, key: str) -> None:
+        """Quick Actions tile glyphs drawn with Canvas primitives only
+        — no external icon assets, no emoji-font dependence."""
+        if key == "chrome":
+            canvas.create_arc(4, 4, 32, 32, start=90, extent=120, fill="#ea4335", outline="")
+            canvas.create_arc(4, 4, 32, 32, start=210, extent=120, fill="#fbbc05", outline="")
+            canvas.create_arc(4, 4, 32, 32, start=330, extent=120, fill="#34a853", outline="")
+            canvas.create_oval(11, 11, 25, 25, fill="#4285f4", outline="#dbeafe", width=1)
+        elif key == "youtube":
+            canvas.create_rectangle(3, 8, 33, 28, fill="#ff0033", outline="")
+            canvas.create_polygon(15, 13, 15, 23, 24, 18, fill="#ffffff", outline="")
+        elif key == "notepad":
+            canvas.create_rectangle(9, 3, 27, 33, fill="#dbeafe", outline="#7dd3fc")
+            for i, y in enumerate((11, 16, 21, 26)):
+                canvas.create_line(13, y, 23 if i % 2 else 24, y, fill="#2563eb", width=1)
+        elif key == "calculator":
+            canvas.create_rectangle(8, 3, 28, 33, fill="#1e3a5f", outline="#38bdf8")
+            canvas.create_rectangle(12, 7, 24, 12, fill="#a5f3fc", outline="")
+            for r in range(3):
+                for c in range(3):
+                    x, y = 12 + c * 5, 16 + r * 5
+                    canvas.create_rectangle(x, y, x + 3, y + 3, fill="#7dd3fc", outline="")
+        elif key == "explorer":
+            canvas.create_rectangle(3, 8, 16, 13, fill="#fcd34d", outline="#fbbf24")
+            canvas.create_polygon(3, 12, 14, 12, 17, 16, 33, 16, 33, 30, 3, 30,
+                                  fill="#f5b921", outline="#fbbf24")
+        elif key == "power":
+            canvas.create_arc(8, 8, 28, 28, start=-40, extent=260, style="arc",
+                              outline="#a5f3fc", width=2)
+            canvas.create_line(18, 4, 18, 16, fill="#a5f3fc", width=2)
 
     # -- HUD home panels (Control Center data) ------------------------
     def _hud_data_dir(self) -> Path:
@@ -1336,6 +1672,19 @@ class OrvixDesktop:
                 self.footer_status_label.configure(
                     text=f"● {mode}",
                     fg=ORANGE if getattr(self, "_busy", False) else GREEN)
+            if hasattr(self, "model_line_labels"):
+                for line in model_status_lines(
+                        self.settings,
+                        core_mode=getattr(self, "core_mode", "READY"),
+                        wake_enabled=bool(getattr(self, "wake_enabled", False))):
+                    value_label = self.model_line_labels.get(line.label)
+                    if value_label is not None:
+                        value_label.configure(text=line.value)
+                    dot_label = self.model_dot_labels.get(line.label)
+                    if dot_label is not None:
+                        dot_label.configure(
+                            fg=GREEN if line.state is True
+                            else ORANGE if line.state is False else MUTED)
         except Exception:
             pass
 
@@ -1381,6 +1730,8 @@ class OrvixDesktop:
         self.chat.see("end")
 
     def _send_from_entry(self) -> None:
+        if getattr(self, "_entry_placeholder_active", False):
+            return  # the placeholder text is not a command
         text = self.entry.get().strip()
         self.entry.delete(0, "end")
         self._send_text(text)
@@ -2422,7 +2773,7 @@ class OrvixDesktop:
             return
         self._busy = True
         self._set_busy(True, "● LISTENING…")
-        self.mic_btn.configure(text="Listening…", state="disabled")
+        self.mic_btn.configure(text="◌", state="disabled")
         self.status_dot.configure(fg=ORANGE)
         threading.Thread(target=self._listen_worker, daemon=True).start()
 
@@ -2436,14 +2787,14 @@ class OrvixDesktop:
     def _voice_captured(self, text: str) -> None:
         self._busy = False
         self._set_busy(False, "● VOICE RECEIVED")
-        self.mic_btn.configure(text="🎙  Speak", state="normal")
+        self.mic_btn.configure(text="🎙", state="normal")
         self._send_text(text)
 
     def _voice_failed(self, message: str) -> None:
         self._busy = False
         self._set_busy(False, "● READY")
         self._set_core_state(CoreState.ERROR)
-        self.mic_btn.configure(text="🎙  Speak", state="normal")
+        self.mic_btn.configure(text="🎙", state="normal")
         self._write_message("SYSTEM", message, "system")
 
     def _set_busy(self, busy: bool, status: str) -> None:
@@ -2637,6 +2988,19 @@ class OrvixDesktop:
                 win.destroy()
             except tk.TclError:
                 pass
+
+    def _nav_home(self) -> None:
+        """Home pill: this view is Home — return focus to the composer."""
+        if hasattr(self, "entry"):
+            self.entry.focus_set()
+
+    def _open_about(self) -> None:
+        messagebox.showinfo(
+            f"About {APP_NAME}",
+            f"{APP_NAME} — AI Agent Assistant\nVersion {APP_VERSION}\n\n"
+            "Repository: https://github.com/zobaerio/orvixai",
+            parent=self.root,
+        )
 
     def _quick_actions(self) -> None:
         self._write_message("SYSTEM", "Quick Actions: Notepad kholo, Calculator kholo, YouTube kholo, Downloads kholo—এগুলোর যেকোনো একটি পাঠাও।", "system")
