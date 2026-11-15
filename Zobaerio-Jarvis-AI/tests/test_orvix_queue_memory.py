@@ -1,8 +1,8 @@
 import sys, tempfile, time, unittest
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from jarvis.orvix.memory import LessonLog, MemoryStore, evaluate_execution
-from jarvis.orvix.taskqueue import TaskQueue, Worker
+from orvix.memory import LessonLog, MemoryStore, evaluate_execution
+from orvix.taskqueue import TaskQueue, Worker
 
 def tmpdir():
     return Path(tempfile.mkdtemp())
