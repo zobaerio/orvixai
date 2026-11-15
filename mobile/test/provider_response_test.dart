@@ -1,16 +1,16 @@
 import 'dart:convert';
 
 import 'package:flutter_test/flutter_test.dart';
-import 'package:jarvis_mobile/provider_response.dart';
+import 'package:orvix_mobile/provider_response.dart';
 
 void main() {
   group('readBoundedResponse', () {
     test('reads a response in multiple chunks', () async {
       final result = await readBoundedResponse(Stream<List<int>>.fromIterable([
         utf8.encode('hello '),
-        utf8.encode('JARVIS'),
+        utf8.encode('ORVIX'),
       ]));
-      expect(result, 'hello JARVIS');
+      expect(result, 'hello ORVIX');
     });
 
     test('rejects a streamed body before buffering beyond the limit', () async {
@@ -34,7 +34,7 @@ void main() {
 
   group('parseChatCompletion', () {
     test('extracts and trims assistant text', () {
-      expect(parseChatCompletion(jsonEncode({'choices': [{'message': {'content': '  Hello from JARVIS  '}}]})), 'Hello from JARVIS');
+      expect(parseChatCompletion(jsonEncode({'choices': [{'message': {'content': '  Hello from ORVIX  '}}]})), 'Hello from ORVIX');
     });
     test('rejects oversized provider response before decoding', () {
       expect(() => parseChatCompletion(' ' * (maxProviderResponseBytes + 1)), throwsFormatException);

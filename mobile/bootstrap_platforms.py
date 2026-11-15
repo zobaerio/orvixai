@@ -42,14 +42,14 @@ def main() -> int:
     missing = [name for name in PLATFORMS if not (ROOT / name).exists()]
     if missing:
         with tempfile.TemporaryDirectory(prefix="orvix-mobile-hosts-") as temporary:
-            generated = Path(temporary) / "jarvis_mobile"
+            generated = Path(temporary) / "orvix_mobile"
             subprocess.run(
                 [
                     "flutter",
                     "create",
                     "--platforms=android,ios",
                     "--project-name",
-                    "jarvis_mobile",
+                    "orvix_mobile",
                     str(generated),
                 ],
                 check=True,
