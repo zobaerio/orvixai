@@ -1,4 +1,4 @@
-# J.A.R.V.I.S — OpenRouter HTTP 404 troubleshooting (বাংলা)
+# ORVIX — OpenRouter HTTP 404 troubleshooting (বাংলা)
 
 এই গাইডটি OpenRouter ব্যবহার করার সময় `HTTP 404`, `model not found` বা ভুল endpoint error দেখা দিলে কাজে লাগবে।
 

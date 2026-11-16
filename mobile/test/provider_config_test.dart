@@ -1,5 +1,5 @@
 import 'package:flutter_test/flutter_test.dart';
-import 'package:jarvis_mobile/provider_config.dart';
+import 'package:orvix_mobile/provider_config.dart';
 
 void main() {
   group('ProviderConfig.normalizeBaseUrl', () {
