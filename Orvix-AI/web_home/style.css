@@ -29,3 +29,12 @@
 .reactor-wrap[data-state="error"] .outer{border-top-color:#ff4d5e;border-bottom-color:#ff4d5e;border-left-color:#ff4d5e;box-shadow:0 0 18px #ff4d5e,inset 0 0 16px #ff4d5e}
 .reactor-wrap[data-state="error"] .middle{border-color:#ff4d5e;box-shadow:0 0 25px #ff4d5e,inset 0 0 22px #ff4d5e}
 .reactor-wrap[data-state="error"] .inner{border-color:#ff4d5e;box-shadow:0 0 22px #ff4d5e}
+
+/* Notifications panel — toggled by the bell button; lists the app's real
+   SYSTEM messages pushed through the bridge (see app.js). */
+.notifications-panel{position:relative;z-index:5;background:linear-gradient(145deg,#07172bfa,#061226f5);border:1px solid #0876b2a1;border-radius:17px;box-shadow:var(--shadow);padding:14px 18px}
+.notifications-heading{display:flex;align-items:center;justify-content:space-between;gap:8px}
+.notifications-heading b{font-size:13px}
+.notifications-list{margin-top:8px;max-height:220px;overflow:auto}
+.notifications-empty{font-size:12px;color:var(--muted);margin:6px 0}
+.notification-item{font-size:12px;line-height:1.55;color:#e0effb;margin:6px 0;padding:8px 10px;border:1px solid #125b88;border-radius:10px;background:#08213b}

@@ -175,10 +175,43 @@ window.orvixPushState = function (state) {
   renderPerf();
 };
 
+// ---------------------------------------------------------------------------
+// Notifications: the bell panel lists the app's real SYSTEM messages —
+// the same messages the bridge pushes into the chat log. Nothing is
+// invented: before the first system message arrives the panel shows an
+// honest empty state.
+// ---------------------------------------------------------------------------
+const notifications = [];
+function renderNotifications() {
+  const list = $("#notificationsList");
+  if (!list) return;
+  list.replaceChildren();
+  if (!notifications.length) {
+    const empty = document.createElement("p");
+    empty.className = "notifications-empty";
+    empty.textContent = "No notifications yet.";
+    list.appendChild(empty);
+    return;
+  }
+  notifications.forEach((text) => {
+    const item = document.createElement("p");
+    item.className = "notification-item";
+    item.textContent = text;
+    list.appendChild(item);
+  });
+}
+function isSystemMessage(m) {
+  return m.kind === "system" || String(m.speaker || "").toUpperCase() === "SYSTEM";
+}
+
 window.orvixPushMessages = function (list) {
   (list || []).forEach((m) => {
     if (!m) return;
     addMessage(m.kind === "user" ? "user" : m.kind === "system" ? "system" : "assistant", m.text, m.speaker);
+    if (isSystemMessage(m) && m.text) {
+      notifications.push(String(m.text));
+      renderNotifications();
+    }
   });
 };
 
@@ -264,7 +297,20 @@ $("#modelSettingsButton").addEventListener("click", () => {
   if (connected && bridgeApi && typeof bridgeApi.openConsole === "function") { callBridge("openConsole", []); return; }
   showTab("settings");
 });
-$("#notificationsButton").addEventListener("click", () => toast("No new notifications."));
+$("#notificationsButton").addEventListener("click", () => {
+  renderNotifications();
+  $("#notificationsPanel").classList.toggle("hidden");
+});
+$("#notificationsClose").addEventListener("click", () => {
+  $("#notificationsPanel").classList.add("hidden");
+});
+$("#profileButton").addEventListener("click", () => {
+  // Same behaviour as the Settings nav / model settings button: with a
+  // live bridge the profile opens the ORVIX console window; standalone
+  // it falls back to the About view instead of doing nothing.
+  if (connected && bridgeApi && typeof bridgeApi.openConsole === "function") { callBridge("openConsole", []); return; }
+  showTab("about");
+});
 
 const tabContent = {
   tools: {title:"ORVIX Tools", desc:"Quick access to your desktop tools and assistant capabilities.", cards:[
