@@ -13,7 +13,23 @@ def test_format_header_clock_pads_single_digit_fields():
     assert format_header_clock(value) == "04:02:09\nSAT, 03 JAN"
 
 
-from orvix.ui_formatters import bounded_int
+from orvix.ui_formatters import bounded_int, format_message_time
+
+
+def test_format_message_time_uses_24_hour_hh_mm():
+    assert format_message_time(datetime(2026, 11, 16, 14, 5)) == "14:05"
+    assert format_message_time(datetime(2026, 11, 16, 9, 7)) == "09:07"
+
+
+def test_format_message_time_midnight_and_day_edges():
+    assert format_message_time(datetime(2026, 1, 1, 0, 0)) == "00:00"
+    assert format_message_time(datetime(2026, 1, 1, 12, 0)) == "12:00"
+    assert format_message_time(datetime(2026, 1, 1, 23, 59)) == "23:59"
+
+
+def test_format_message_time_drops_seconds():
+    assert format_message_time(datetime(2026, 1, 1, 8, 30, 45)) == "08:30"
+    assert format_message_time(datetime(2026, 1, 1, 0, 0, 59)) == "00:00"
 
 
 def test_bounded_int_clamps_values_to_inclusive_bounds():

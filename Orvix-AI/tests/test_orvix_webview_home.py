@@ -89,6 +89,9 @@ class FakeApp:
     def _toggle_wake_word(self):
         self.calls.append(("_toggle_wake_word",))
 
+    def _clear_conversation_from_web(self):
+        self.calls.append(("_clear_conversation_from_web",))
+
 
 def drain(app):
     """Execute every queued (callback, args) pair, Tk-thread style."""
@@ -436,6 +439,73 @@ class MessageBufferTests(unittest.TestCase):
              ("SYSTEM", "note", "system")])
         self.assertEqual(home.drain_messages(), [])
 
+    def test_pushed_messages_carry_wellformed_time(self):
+        # Phase 5: every pushed message is stamped with an HH:MM
+        # time (the shared ui_formatters format) at creation.
+        home = WebViewHome(FakeApp())
+        home.push_message("ORVIX", "timed", "assistant")
+        (message,) = home.drain_messages()
+        json.dumps(message)  # the stamp must stay JSON-serializable
+        self.assertIn("time", message)
+        match = re.fullmatch(r"(\d{2}):(\d{2})", message["time"])
+        self.assertIsNotNone(match, message["time"])
+        hour, minute = int(match.group(1)), int(match.group(2))
+        self.assertTrue(0 <= hour <= 23)
+        self.assertTrue(0 <= minute <= 59)
+
+    def test_clear_messages_empties_buffer(self):
+        home = WebViewHome(FakeApp())
+        home.push_message("USER", "hello", "user")
+        home.push_message("ORVIX", "hi", "assistant")
+        home.clear_messages()
+        self.assertEqual(home.drain_messages(), [])
+        # Messages pushed after the clear are unaffected.
+        home.push_message("ORVIX", "fresh start", "assistant")
+        self.assertEqual(len(home.drain_messages()), 1)
+
+    def test_buffer_stays_bounded(self):
+        home = WebViewHome(FakeApp())
+        for i in range(webview_home.MAX_MESSAGE_BUFFER + 50):
+            home.push_message("ORVIX", f"msg {i}", "assistant")
+        messages = home.drain_messages()
+        self.assertEqual(len(messages), webview_home.MAX_MESSAGE_BUFFER)
+        # The newest message is always kept; the oldest are dropped.
+        self.assertEqual(
+            messages[-1]["text"],
+            f"msg {webview_home.MAX_MESSAGE_BUFFER + 49}")
+
+
+class ClearConversationTests(unittest.TestCase):
+    def test_api_clear_enqueues_app_clear(self):
+        app = FakeApp()
+        api = OrvixWebHomeApi(app)
+        self.assertEqual(api.clearConversation(), {"ok": True})
+        self.assertEqual(app.calls, [])  # nothing before the drain
+        drain(app)
+        self.assertEqual(app.calls, [("_clear_conversation_from_web",)])
+
+    def test_bridge_clear_empties_buffer_and_keeps_task_history(self):
+        # The enqueued app-side clear empties ONLY the bridge buffer:
+        # the app's TaskStore records must survive untouched.
+        with tempfile.TemporaryDirectory() as tmp:
+            store = TaskStore(Path(tmp) / "task_history.json")
+            record = store.create_task("Notepad kholo")
+            store.update_task(record["id"], status="completed", result="opened")
+            app = FakeApp()
+            app.task_store = store
+            home = WebViewHome(app)
+            app._clear_conversation_from_web = home.clear_messages
+            home.push_message("YOU", "Notepad kholo", "user")
+            home.push_message("ORVIX", "opened", "assistant")
+            api = OrvixWebHomeApi(app)
+            self.assertEqual(api.clearConversation(), {"ok": True})
+            drain(app)
+            self.assertEqual(home.drain_messages(), [])
+            remaining = store.list_tasks()
+            self.assertEqual(len(remaining), 1)
+            self.assertEqual(remaining[0]["command"], "Notepad kholo")
+            self.assertEqual(remaining[0]["status"], "completed")
+
 
 _WEB_HOME_FILES = ("index.html", "app.js", "style.css")
 
@@ -547,6 +617,46 @@ class StaticWebHomeTests(unittest.TestCase):
         self.assertIn("System Information", self.index_html)
         self.assertIn("Power Options", self.index_html)
         self.assertNotIn("Power Menu", self.index_html)
+
+    def test_chat_messages_render_time_and_copy_button(self):
+        # Phase 5: addMessage renders the bridge-stamped time next to
+        # the speaker label and a per-message Copy button backed by
+        # the clipboard API with an honest unavailable fallback.
+        self.assertIn("m.time", self.app_js)
+        self.assertIn("message-time", self.app_js)
+        self.assertIn(".message-time", self.style_css)
+        self.assertIn("copyMessageText", self.app_js)
+        self.assertIn("copy-button", self.app_js)
+        self.assertIn(".copy-button", self.style_css)
+        self.assertIn("navigator.clipboard", self.app_js)
+        self.assertIn("clipboard unavailable", self.app_js)
+
+    def test_clear_conversation_control_and_cleared_hook(self):
+        # Phase 5: a Clear control in the chat panel, a confirm that
+        # states task history is kept, the bridge clearConversation
+        # call, and the orvixChatCleared push hook that keeps both
+        # UIs in sync after a clear.
+        self.assertIn('id="clearChatButton"', self.index_html)
+        self.assertIn("clearChatButton", self.app_js)
+        self.assertIn("clearConversation", self.app_js)
+        self.assertIn("Task history and settings are NOT deleted.", self.app_js)
+        self.assertIn("orvixChatCleared", self.app_js)
+        self.assertIn("window.confirm", self.app_js)
+
+    def test_typing_indicator_driven_by_busy_flag(self):
+        # Phase 5: the typing indicator exists in the chat panel and
+        # is updated from the payload's busy flag on every state push
+        # (the same flag updateChatPill already consumes).
+        self.assertIn('id="typingIndicator"', self.index_html)
+        self.assertIn("updateTypingIndicator", self.app_js)
+        self.assertIn("updateTypingIndicator(state)", self.app_js)
+        self.assertIn(".typing-indicator", self.style_css)
+
+    def test_chat_dom_growth_is_bounded(self):
+        # Phase 5 (§13): addMessage trims the oldest message nodes
+        # beyond the same 200 bound as the bridge buffer.
+        self.assertIn("MAX_CHAT_MESSAGES = 200", self.app_js)
+        self.assertIn("trimChatLog", self.app_js)
 
     def test_footer_links_point_at_real_repo_only(self):
         self.assertIn("https://github.com/zobaerio/orvixai", self.index_html)

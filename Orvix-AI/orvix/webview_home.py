@@ -26,6 +26,7 @@ import json
 import os
 import threading
 import time
+from datetime import datetime
 from pathlib import Path
 
 try:
@@ -40,6 +41,7 @@ from .home_data import (
     quick_action_tiles,
 )
 from .hud_data import build_task_entries
+from .ui_formatters import format_message_time
 from .version import APP_NAME, APP_VERSION
 
 ENV_VAR = "ORVIX_WEBVIEW_HOME"
@@ -342,6 +344,24 @@ class OrvixWebHomeApi:
         except Exception as exc:
             return {"ok": False, "error": type(exc).__name__}
 
+    def clearConversation(self):
+        try:
+            # The web page has already asked the user to confirm in
+            # its own UI, so the enqueued app method clears without a
+            # second desktop prompt. It clears ONLY the conversation
+            # views and this bridge's message buffer — task history
+            # (TaskStore) and settings are never touched.
+            self._enqueue("_clear_conversation_from_web", ())
+            return {"ok": True}
+        except Exception as exc:
+            return {"ok": False, "error": type(exc).__name__}
+
+
+# Upper bound on buffered chat messages awaiting push to the web
+# page. The web chat DOM trims to the same bound (see app.js), so a
+# long session cannot grow either side without limit.
+MAX_MESSAGE_BUFFER = 200
+
 
 class WebViewHome:
     """Owns the pywebview window and the state/message push loops."""
@@ -350,7 +370,8 @@ class WebViewHome:
         self.app = app
         self.api = OrvixWebHomeApi(app)
         self.window = None
-        self._messages = collections.deque(maxlen=200)
+        self._messages = collections.deque(maxlen=MAX_MESSAGE_BUFFER)
+        self._cleared_pending = False
         self._lock = threading.Lock()
         self._stop = threading.Event()
         self._thread = None
@@ -366,9 +387,25 @@ class WebViewHome:
     # -- message buffer -------------------------------------------------
 
     def push_message(self, speaker, text, kind):
+        # Every message is stamped once, here at creation, with the
+        # shared HH:MM formatter so the web page and the Tk console
+        # show the same time for the same message.
         with self._lock:
             self._messages.append(
-                {"speaker": str(speaker), "text": str(text), "kind": str(kind)})
+                {"speaker": str(speaker), "text": str(text),
+                 "kind": str(kind),
+                 "time": format_message_time(datetime.now())})
+
+    def clear_messages(self):
+        """Empty the message buffer and flag the web chat as cleared.
+
+        Only the buffer is touched — task history and settings live
+        elsewhere and are never cleared here. The push loop forwards
+        the cleared signal to the page on its next iteration.
+        """
+        with self._lock:
+            self._messages.clear()
+            self._cleared_pending = True
 
     def drain_messages(self) -> list:
         with self._lock:
@@ -465,6 +502,19 @@ class WebViewHome:
 
     def _push_loop(self):
         while not self._stop.is_set():
+            # A pending cleared signal goes out BEFORE any messages
+            # drained below: those messages arrived after the clear
+            # (clearing empties the buffer), so the page must wipe
+            # first and only then append them.
+            with self._lock:
+                cleared = self._cleared_pending
+                self._cleared_pending = False
+            if cleared and self.window is not None:
+                try:
+                    self.window.evaluate_js(
+                        "window.orvixChatCleared && window.orvixChatCleared()")
+                except Exception:
+                    pass
             messages = self.drain_messages()
             if messages and self.window is not None:
                 try:
@@ -506,6 +556,7 @@ class WebViewHome:
 __all__ = [
     "ENV_VAR",
     "ACTION_COMMANDS",
+    "MAX_MESSAGE_BUFFER",
     "OrvixWebHomeApi",
     "WebViewHome",
     "build_state_payload",

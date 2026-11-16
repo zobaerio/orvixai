@@ -59,3 +59,18 @@
    Task Manager and System Information tiles share the quick-grid
    styling; only their icon colours differ. */
 .settings{color:#a5f3fc}.task-manager{color:#34d399}.system-info{color:#93c5fd}
+
+/* Chat polish (Phase 5): message header row with the HH:MM timestamp
+   the bridge stamps on each message and a per-message Copy button;
+   the Clear control in the chat heading; and the typing indicator
+   driven by the payload's busy flag (see app.js). */
+.message-head{display:flex;align-items:center;gap:8px}
+.message-time{font-size:10px;color:#7295b4;font-weight:700}
+.copy-button{margin-left:auto;background:#082844;border:1px solid #1385b7;border-radius:12px;padding:2px 9px;color:var(--cyan);font-size:9px;font-weight:800}
+.copy-button:hover{background:#0a3b5e}
+.typing-indicator{display:flex;align-items:center;gap:5px;padding:8px 19px;font-size:11px;color:#87a9c5;border-top:1px solid #12446b}
+.typing-indicator em{font-style:normal;margin-left:4px}
+.typing-indicator span{width:6px;height:6px;border-radius:50%;background:var(--cyan);box-shadow:0 0 8px #00bfff;animation:typingBlink 1s ease-in-out infinite alternate}
+.typing-indicator span:nth-child(2){animation-delay:.2s}
+.typing-indicator span:nth-child(3){animation-delay:.4s}
+@keyframes typingBlink{to{opacity:.25;transform:scale(.7)}}

@@ -20,13 +20,62 @@ function updateClock() {
 }
 updateClock(); setInterval(updateClock, 1000);
 
-function addMessage(type, text, speaker) {
+// Bounded chat growth: the chat DOM keeps at most this many message
+// nodes — the same bound as the bridge's message buffer — trimming
+// the oldest first. The just-added message is always last, so it is
+// never the one trimmed.
+const MAX_CHAT_MESSAGES = 200;
+function trimChatLog() {
+  const log = $("#chatLog");
+  if (!log) return;
+  let messages = log.querySelectorAll(".message");
+  while (messages.length > MAX_CHAT_MESSAGES) {
+    messages[0].remove();
+    messages = log.querySelectorAll(".message");
+  }
+}
+
+// Copy a message's text. Uses the async clipboard API when the
+// window has access to it; otherwise it says so honestly via a
+// toast instead of pretending the copy happened.
+function copyMessageText(text) {
+  const value = String(text == null ? "" : text);
+  if (navigator.clipboard && typeof navigator.clipboard.writeText === "function") {
+    navigator.clipboard.writeText(value).then(
+      () => toast("Message copied."),
+      () => toast("Copy failed — clipboard unavailable in this window."));
+    return;
+  }
+  toast("Copy unavailable — clipboard is not accessible in this window.");
+}
+
+function addMessage(type, text, speaker, time) {
   const wrap = document.createElement("div");
   wrap.className = type === "user" ? "message user-message" : "message assistant-message";
+  const head = document.createElement("div");
+  head.className = "message-head";
   const label = document.createElement("b");
   label.textContent = speaker || (type === "user" ? "YOU" : type === "system" ? "SYSTEM" : "ORVIX");
+  head.appendChild(label);
+  // Messages pushed by the bridge carry a "time" field (HH:MM,
+  // stamped by the desktop app at creation). Older buffered entries
+  // without the field simply render without a timestamp.
+  if (time) {
+    const stamp = document.createElement("span");
+    stamp.className = "message-time";
+    stamp.textContent = time;
+    head.appendChild(stamp);
+  }
+  const copyButton = document.createElement("button");
+  copyButton.type = "button";
+  copyButton.className = "copy-button";
+  copyButton.textContent = "Copy";
+  copyButton.title = "Copy this message";
+  copyButton.addEventListener("click", () => copyMessageText(text));
+  head.appendChild(copyButton);
   const p = document.createElement("p"); p.textContent = text;
-  wrap.append(label, p); $("#chatLog").appendChild(wrap);
+  wrap.append(head, p); $("#chatLog").appendChild(wrap);
+  trimChatLog();
   $("#chatLog").scrollTop = $("#chatLog").scrollHeight;
 }
 
@@ -123,6 +172,18 @@ function updateChatPill(state) {
   else label.textContent = "READY";
 }
 
+// Typing/working indicator: shown exactly while the payload's busy
+// flag is true, hidden otherwise — the same flag that drives the
+// chat pill above, so the two can never disagree. Nothing is shown
+// for a standalone (unconnected) page.
+function updateTypingIndicator(state) {
+  const el = $("#typingIndicator");
+  if (!el) return;
+  const busy = !!(connected && state && state.busy);
+  el.classList.toggle("hidden", !busy);
+  el.setAttribute("aria-hidden", busy ? "false" : "true");
+}
+
 // ---------------------------------------------------------------------------
 // Live performance strip: bars are real CPU samples pushed by the bridge.
 // Before the first sample every bar stays at 0 height — nothing is faked.
@@ -213,6 +274,7 @@ window.orvixPushState = function (state) {
 
   updateModelPill(state);
   updateChatPill(state);
+  updateTypingIndicator(state);
   renderTasks();
 
   if (state.character) {
@@ -273,12 +335,23 @@ function isSystemMessage(m) {
 window.orvixPushMessages = function (list) {
   (list || []).forEach((m) => {
     if (!m) return;
-    addMessage(m.kind === "user" ? "user" : m.kind === "system" ? "system" : "assistant", m.text, m.speaker);
+    addMessage(m.kind === "user" ? "user" : m.kind === "system" ? "system" : "assistant", m.text, m.speaker, m.time);
     if (isSystemMessage(m) && m.text) {
       notifications.push(String(m.text));
       renderNotifications();
     }
   });
+};
+
+// Pushed by the bridge after a Clear Conversation: the desktop
+// console view and the bridge buffer are already empty, so the web
+// chat view empties too — both UIs stay in sync. Only message nodes
+// are removed; the static system note is page furniture, not a
+// conversation message. Idempotent: the Clear button below also
+// calls it directly for immediate feedback.
+window.orvixChatCleared = function () {
+  const log = $("#chatLog");
+  if (log) log.querySelectorAll(".message").forEach((node) => node.remove());
 };
 
 // ---------------------------------------------------------------------------
@@ -310,6 +383,24 @@ function sendCommand() {
 }
 $("#sendButton").addEventListener("click", sendCommand);
 $("#commandInput").addEventListener("keydown", e => { if (e.key === "Enter") sendCommand(); });
+
+// Clear Conversation: asks first (the confirm text states that task
+// history is NOT deleted), then — with a live bridge — routes
+// through the bridge so the desktop view and the message buffer
+// clear too; the bridge pushes orvixChatCleared back to confirm.
+// Standalone it clears only this page's view and says so.
+$("#clearChatButton").addEventListener("click", () => {
+  const note = "Clear the conversation view? Task history and settings are NOT deleted.";
+  if (!window.confirm(note)) return;
+  if (connected && bridgeApi && typeof bridgeApi.clearConversation === "function") {
+    callBridge("clearConversation", []);
+    window.orvixChatCleared();
+    toast("Conversation cleared.");
+    return;
+  }
+  window.orvixChatCleared();
+  toast("Conversation cleared (demo — this page only).");
+});
 
 $$(".character").forEach(button => button.addEventListener("click", () => {
   $$(".character").forEach(item => item.classList.remove("selected"));
@@ -503,6 +594,7 @@ $("#tasksBackHome").addEventListener("click", () => showTab("home"));
 // empty performance strip (all bars at 0 height, caption shows dashes).
 setConnectedUI(false);
 updateChatPill(null);
+updateTypingIndicator(null);
 renderTasks();
 renderPerf();
 tryConnect();
