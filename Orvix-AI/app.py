@@ -796,10 +796,13 @@ class OrvixDesktop:
         self.nav_items: list[tk.Widget] = []
         # Nav pills map to real entry points only: Home focuses the
         # composer on this view, Tools lists the quick-action tools,
-        # Settings opens the settings window, About shows version info.
+        # Tasks opens the existing Task History window (the same one
+        # the right-rail TASK HISTORY button opens), Settings opens
+        # the settings window, About shows version info.
         nav_defs = [
             ("⌂  HOME", True, self._nav_home),
             ("▦  TOOLS", False, self._quick_actions),
+            ("▤  TASKS", False, self._open_task_history),
             ("⚙  SETTINGS", False, self._open_settings),
             ("ABOUT", False, self._open_about),
         ]

@@ -61,10 +61,66 @@ function callBridge(method, args) {
 function setConnectedUI(isConnected) {
   const label = $("#connectionLabel");
   if (label) label.textContent = isConnected ? "Online" : "Not connected";
-  const pill = $("#modelConnectedPill");
-  if (pill) pill.innerHTML = isConnected ? "<i></i> CONNECTED" : "<i></i> NOT CONNECTED";
   const live = $("#livePill");
   if (live) live.innerHTML = isConnected ? "<i></i> LIVE" : "<i></i> DEMO";
+  // The model pill is NOT set from the bridge connection alone: a
+  // connected bridge says nothing about the AI endpoint. Disconnect
+  // is the only state the bridge itself can honestly report here;
+  // every connected label comes from the payload's endpoint state
+  // via updateModelPill below.
+  if (!isConnected) {
+    const pill = $("#modelConnectedPill");
+    if (pill) pill.innerHTML = "<i></i> NOT CONNECTED";
+  } else {
+    updateModelPill(lastState);
+  }
+}
+
+// Model pill wording from the payload's endpoint state, which the
+// bridge derives from the same model status lines shown in the
+// checks list: configuration is what is known — the endpoint is
+// never probed by the home page, so the pill never claims the model
+// itself is connected or reachable.
+const MODEL_PILL_TEXT = {
+  "configured": "ENDPOINT CONFIGURED",
+  "partial": "PARTIALLY CONFIGURED",
+  "not-configured": "NOT CONFIGURED",
+  "not-checked": "NOT CHECKED"
+};
+function updateModelPill(state) {
+  const pill = $("#modelConnectedPill");
+  if (!pill) return;
+  if (!connected) { pill.innerHTML = "<i></i> NOT CONNECTED"; return; }
+  const model = (state && state.model) || {};
+  let key = model.endpointState;
+  if (!key) {
+    // Older payload without endpointState: fall back to the ENDPOINT
+    // status line rather than guessing from the bridge connection.
+    const lines = Array.isArray(model.statusLines) ? model.statusLines : [];
+    const endpointLine = lines.find((line) => line && line.label === "ENDPOINT");
+    if (!endpointLine) key = "not-checked";
+    else if (endpointLine.state === true) key = "configured";
+    else if (endpointLine.state === false) {
+      key = String(endpointLine.value || "").indexOf("Partially") === 0 ? "partial" : "not-configured";
+    } else key = "not-checked";
+  }
+  const dot = document.createElement("i");
+  const text = document.createElement("span");
+  text.textContent = MODEL_PILL_TEXT[key] || MODEL_PILL_TEXT["not-checked"];
+  pill.replaceChildren(dot, text);
+}
+
+// Chat heading pill: mirrors the live core state from the payload —
+// the active core mode while the app is busy, READY when it is idle.
+// Before the first state push (standalone demo) it says NOT
+// CONNECTED instead of pretending to be ready.
+function updateChatPill(state) {
+  const label = $("#chatStateLabel");
+  if (!label) return;
+  if (!connected || !state) { label.textContent = "NOT CONNECTED"; return; }
+  const core = state.core || {};
+  if (state.busy) label.textContent = core.mode ? String(core.mode) : "BUSY";
+  else label.textContent = "READY";
 }
 
 // ---------------------------------------------------------------------------
@@ -154,6 +210,10 @@ window.orvixPushState = function (state) {
   if (coreWrap && core.state) coreWrap.dataset.state = core.state;
   const coreMode = $("#coreModeLabel");
   if (coreMode) coreMode.textContent = core.mode || "—";
+
+  updateModelPill(state);
+  updateChatPill(state);
+  renderTasks();
 
   if (state.character) {
     const key = String(state.character).toUpperCase();
@@ -312,6 +372,49 @@ $("#profileButton").addEventListener("click", () => {
   showTab("about");
 });
 
+// ---------------------------------------------------------------------------
+// Tasks view: renders the payload's tasks block — real TaskStore
+// records pushed by the bridge (status, command, created/finished
+// times), newest first, read-only. Standalone (no bridge) it shows
+// the same not-connected honesty as the rest of the page instead of
+// inventing tasks; a connected bridge with no history shows the
+// honest empty state.
+// ---------------------------------------------------------------------------
+function renderTasks() {
+  const list = $("#tasksList");
+  const empty = $("#tasksEmpty");
+  if (!list || !empty) return;
+  list.replaceChildren();
+  if (!connected) {
+    empty.textContent = "Not connected — desktop bridge required. Tasks recorded by the ORVIX desktop app appear here when the bridge is connected.";
+    empty.classList.remove("hidden");
+    return;
+  }
+  const tasks = lastState && Array.isArray(lastState.tasks) ? lastState.tasks : [];
+  if (!tasks.length) {
+    empty.textContent = "No tasks yet";
+    empty.classList.remove("hidden");
+    return;
+  }
+  empty.classList.add("hidden");
+  tasks.forEach((task) => {
+    if (!task) return;
+    const row = document.createElement("article");
+    row.className = "task-row";
+    const status = document.createElement("span");
+    status.className = "task-status";
+    status.textContent = (task.mark ? task.mark + " " : "") + String(task.status || "unknown").toUpperCase();
+    const command = document.createElement("span");
+    command.className = "task-command";
+    command.textContent = task.command || "";
+    const times = document.createElement("span");
+    times.className = "task-times";
+    times.textContent = "Started " + (task.createdAt || "—") + " · Finished " + (task.finishedAt || "Not finished");
+    row.append(status, command, times);
+    list.appendChild(row);
+  });
+}
+
 const tabContent = {
   tools: {title:"ORVIX Tools", desc:"Quick access to your desktop tools and assistant capabilities.", cards:[
     ["Voice Assistant","Speech recognition, wake word and text-to-speech controls."],
@@ -334,11 +437,18 @@ const tabContent = {
   ]}
 };
 function showTab(tab) {
+  const tasksView = $("#tasksView");
   if (tab === "home") {
     $("#homeView").classList.remove("hidden"); $("#secondaryView").classList.add("hidden");
+    if (tasksView) tasksView.classList.add("hidden");
+  } else if (tab === "tasks") {
+    $("#homeView").classList.add("hidden"); $("#secondaryView").classList.add("hidden");
+    if (tasksView) tasksView.classList.remove("hidden");
+    renderTasks();
   } else {
     const data = tabContent[tab] || tabContent.tools;
     $("#homeView").classList.add("hidden"); $("#secondaryView").classList.remove("hidden");
+    if (tasksView) tasksView.classList.add("hidden");
     $("#secondaryTitle").textContent = data.title; $("#secondaryDescription").textContent = data.desc;
     $("#secondaryCards").replaceChildren();
     data.cards.forEach(([title, desc]) => {
@@ -370,9 +480,12 @@ $$(".nav-item").forEach(button => button.addEventListener("click", () => {
 }));
 $$("[data-tab='tools']").forEach(button => button.addEventListener("click", () => showTab("tools")));
 $("#backHome").addEventListener("click", () => showTab("home"));
+$("#tasksBackHome").addEventListener("click", () => showTab("home"));
 
 // Initial state: not connected until the bridge proves otherwise, and an
 // empty performance strip (all bars at 0 height, caption shows dashes).
 setConnectedUI(false);
+updateChatPill(null);
+renderTasks();
 renderPerf();
 tryConnect();

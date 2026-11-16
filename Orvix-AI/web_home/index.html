@@ -17,6 +17,7 @@
       <nav class="main-nav" aria-label="Main navigation">
         <button class="nav-item active" data-tab="home">⌂ <span>Home</span></button>
         <button class="nav-item" data-tab="tools">▦ <span>Tools</span></button>
+        <button class="nav-item" data-tab="tasks">▤ <span>Tasks</span></button>
         <button class="nav-item" data-tab="settings">⚙ <span>Settings</span></button>
         <button class="nav-item" data-tab="about">ⓘ <span>About</span></button>
       </nav>
@@ -74,7 +75,7 @@
         </section>
 
         <section class="panel chat-panel">
-          <div class="chat-heading"><div><span class="heading-icon">◉</span><b>AI AGENT · TASK EXECUTION</b></div><span class="ready"><i></i> READY</span></div>
+          <div class="chat-heading"><div><span class="heading-icon">◉</span><b>AI AGENT · TASK EXECUTION</b></div><span class="ready" id="chatStatePill"><i></i> <span id="chatStateLabel">READY</span></span></div>
           <div class="chat-log" id="chatLog" aria-live="polite">
             <div class="message assistant-message"><b>ORVIX</b><p>আসসালামু আলাইকুম! আমি ORVIX, আপনার AI Desktop Assistant। বাংলা বা English-এ কমান্ড দিন। আমি আপনার কাজ সহজ করতে প্রস্তুত।</p><small>আপনি বলতে পারেন: “Open Chrome”, “Notepad kholo”, “YouTube kholo”</small></div>
             <div class="system-note"><span>ⓘ SYSTEM</span><p>Live উত্তর ও telemetry ORVIX desktop bridge থেকে আসে। Bridge ছাড়া পেজটি standalone খুললে not-connected demo state দেখায় — কোনো ভুয়া data দেখানো হয় না।</p></div>
@@ -118,6 +119,13 @@
         </section>
       </aside>
     </main>
+
+    <section class="secondary-view panel hidden" id="tasksView">
+      <div class="panel-heading"><h2>Tasks</h2><button class="text-button" id="tasksBackHome">← Back to Home</button></div>
+      <p>Recent tasks from the ORVIX desktop app, newest first. This view is read-only — run, cancel and full history live in the desktop console's Task History.</p>
+      <div class="tasks-list" id="tasksList"></div>
+      <p class="tasks-empty" id="tasksEmpty">No tasks yet</p>
+    </section>
 
     <section class="secondary-view panel hidden" id="secondaryView">
       <div class="panel-heading"><h2 id="secondaryTitle">Tools</h2><button class="text-button" id="backHome">← Back to Home</button></div>

@@ -39,6 +39,7 @@ from .home_data import (
     model_status_lines,
     quick_action_tiles,
 )
+from .hud_data import build_task_entries
 from .version import APP_NAME, APP_VERSION
 
 ENV_VAR = "ORVIX_WEBVIEW_HOME"
@@ -148,6 +149,46 @@ def _character_entries(app) -> list:
     return entries
 
 
+# How many recent task records the payload carries. The web Tasks
+# view is a recent-history glance, not the full Task History window
+# (which stays the place for search/filter over all 100 records).
+MAX_PAYLOAD_TASKS = 10
+
+
+def _recent_task_records(app) -> list:
+    """Newest-first TaskStore records from the app, or [] when the app
+    has no readable task store. Any failure yields an empty list: the
+    page then shows its honest empty state instead of stale or
+    invented tasks."""
+    store = getattr(app, "task_store", None)
+    if store is None:
+        return []
+    try:
+        records = store.list_tasks(limit=MAX_PAYLOAD_TASKS)
+    except Exception:
+        return []
+    return records if isinstance(records, list) else []
+
+
+def _endpoint_state(lines) -> str:
+    """One-word endpoint state for the model pill, taken from the
+    ENDPOINT status line the payload already carries: 'configured'
+    when that line reports a configured endpoint, 'partial' when it
+    reports a partial configuration, 'not-configured' otherwise, and
+    'not-checked' when no endpoint line exists at all. This never
+    claims the endpoint was reached — configuration is all the status
+    lines actually know."""
+    for line in lines:
+        if line.label != "ENDPOINT":
+            continue
+        if line.state is True:
+            return "configured"
+        if line.state is False:
+            return "partial" if "Partially" in line.value else "not-configured"
+        return "not-checked"
+    return "not-checked"
+
+
 def build_state_payload(app, stats=None) -> dict:
     """JSON-serializable snapshot of real app state for the web page.
 
@@ -174,11 +215,14 @@ def build_state_payload(app, stats=None) -> dict:
         "model": {
             "name": str(settings.get("model") or ""),
             "endpoint": str(settings.get("api_base_url") or ""),
+            "endpointState": _endpoint_state(lines),
             "statusLines": [
                 {"label": line.label, "value": line.value, "state": line.state}
                 for line in lines
             ],
         },
+        "tasks": build_task_entries(
+            _recent_task_records(app), limit=MAX_PAYLOAD_TASKS),
         "stats": {
             "cpu": stats.cpu_percent,
             "ram": stats.ram_percent,
