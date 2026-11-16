@@ -228,6 +228,12 @@ window.orvixPushState = function (state) {
   const toggle = $("#voiceToggle");
   if (toggle && state.wakeEnabled !== undefined) toggle.checked = !!state.wakeEnabled;
 
+  // The wake pill shows the CONFIGURED wake phrase from the payload —
+  // the exact phrase the desktop matcher listens for — never a
+  // hard-coded string, so display and matcher cannot diverge.
+  const wakeButton = $("#wakeWordButton");
+  if (wakeButton && state.wakePhrase) wakeButton.textContent = state.wakePhrase;
+
   perfCpu = stats.cpu == null ? null : stats.cpu;
   perfRam = stats.ram == null ? null : stats.ram;
   perfData.push(stats.cpu == null ? null : stats.cpu);
@@ -326,6 +332,17 @@ voiceToggle.addEventListener("change", () => {
 $("#wakeWordButton").addEventListener("click", () => {
   voiceToggle.checked = !voiceToggle.checked;
   voiceToggle.dispatchEvent(new Event("change"));
+});
+
+// Stop Speaking: routes through the bridge to the desktop app's
+// SpeechEngine.stop_speaking(). Safe to press while ORVIX is silent
+// (a no-op then); standalone it explains the bridge is required.
+$("#stopSpeakingButton").addEventListener("click", () => {
+  if (connected && callBridge("stopSpeaking", [])) {
+    toast("Stop speaking requested.");
+    return;
+  }
+  toast("Not connected — desktop bridge required.");
 });
 
 // Standalone fallback only: browser speech recognition fills the composer.

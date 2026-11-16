@@ -237,6 +237,9 @@ def build_state_payload(app, stats=None) -> dict:
         "character": str(selected) if selected is not None else "luna",
         "characters": _character_entries(app),
         "wakeEnabled": wake_enabled,
+        # The configured wake phrase, so the page's wake pill displays
+        # the exact phrase the wake-word matcher listens for.
+        "wakePhrase": str(settings.get("wake_phrase") or "hey orvix"),
         "busy": bool(getattr(app, "_busy", False)),
     }
 
@@ -311,6 +314,13 @@ class OrvixWebHomeApi:
     def startListening(self):
         try:
             self._enqueue("_listen", ())
+            return {"ok": True}
+        except Exception as exc:
+            return {"ok": False, "error": type(exc).__name__}
+
+    def stopSpeaking(self):
+        try:
+            self._enqueue("_stop_speaking", ())
             return {"ok": True}
         except Exception as exc:
             return {"ok": False, "error": type(exc).__name__}

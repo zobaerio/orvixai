@@ -16,8 +16,8 @@ from typing import Callable
 
 from orvix.agent import OrvixAgent
 from orvix.task_planner import classify_plan_step_kind, format_plan_guidance, generate_task_plan, should_generate_task_plan
-from orvix.settings import auto_configure_from_api_key, get_api_key, load_settings, save_settings, set_api_key, test_api_connection, validate_api_base_url, validate_api_key_transport
-from orvix.speech import SpeechEngine
+from orvix.settings import auto_configure_from_api_key, get_api_key, load_settings, save_settings, set_api_key, test_api_connection, validate_api_base_url, validate_api_key_transport, validate_speech_rate, validate_speech_volume, validate_wake_phrase
+from orvix.speech import SpeechEngine, match_wake_phrase
 from orvix.core_states import CoreState
 from orvix.floating_core import FloatingCoreWidget
 from orvix.overlay import (
@@ -112,7 +112,7 @@ class OrvixDesktop:
         self._build_ui()
         self._build_floating_hud()
         self.root.bind_all("<Control-Shift-j>", self._floating_hud_hotkey)
-        self._write_message("ORVIX", "হ্যালো! আমি তোমার ORVIX Desktop Assistant. তিনটি character profile থেকে পছন্দ করো, বাংলা বা English-এ টাইপ করো অথবা নিচের mic বোতামে ক্লিক করে বলো।\n\nচাইলে উপরের WAKE WORD mode চালু করে ‘Orvix’ বলেও নির্দেশনা দিতে পারো। শুরু করো: ‘Notepad kholo’, ‘YouTube kholo’, ‘Downloads kholo’, অথবা AI model connect করে আমাকে আরও জটিল কাজ দাও।", "assistant")
+        self._write_message("ORVIX", f"হ্যালো! আমি তোমার ORVIX Desktop Assistant. তিনটি character profile থেকে পছন্দ করো, বাংলা বা English-এ টাইপ করো অথবা নিচের mic বোতামে ক্লিক করে বলো।\n\nচাইলে উপরের WAKE WORD mode চালু করে ‘{str(self.settings.get('wake_phrase', 'hey orvix'))}’ বলেও নির্দেশনা দিতে পারো। শুরু করো: ‘Notepad kholo’, ‘YouTube kholo’, ‘Downloads kholo’, অথবা AI model connect করে আমাকে আরও জটিল কাজ দাও।", "assistant")
         self._write_message("SYSTEM", "নিরাপত্তা: file read/create/copy/move/rename বা Recycle Bin-এ পাঠানোর আগে আমি নির্দিষ্ট action-এর অনুমতি চাইব। File read করলে contents AI provider-এ যেতে পারে। arbitrary PowerShell/terminal command চালানো হয় না।", "system")
         if self._startup_recovered_task_count:
             self._write_message(
@@ -1236,8 +1236,14 @@ class OrvixDesktop:
         wake_row.pack(fill="x")
         tk.Label(wake_row, text="Wake Word:", bg="#050b17", fg=MUTED,
                  font=("Segoe UI", 8)).pack(side="left")
-        tk.Label(wake_row, text="Hey ORVIX", bg="#0e2c3c", fg=ACCENT,
-                 font=("Segoe UI Semibold", 8, "bold"), padx=8, pady=2).pack(side="left", padx=(6, 0))
+        # The label shows the CONFIGURED wake phrase from settings —
+        # the exact phrase the wake-word matcher listens for — never a
+        # hard-coded string, so display and matcher cannot diverge.
+        self.wake_phrase_label = tk.Label(
+            wake_row, text=str(self.settings.get("wake_phrase", "hey orvix")),
+            bg="#0e2c3c", fg=ACCENT,
+            font=("Segoe UI Semibold", 8, "bold"), padx=8, pady=2)
+        self.wake_phrase_label.pack(side="left", padx=(6, 0))
         # The wake-word toggle itself moved here from the top bar; it
         # is the same button _toggle_wake_word has always driven.
         self.wake_btn = tk.Button(voice_panel, text="WAKE WORD: OFF", command=self._toggle_wake_word,
@@ -1245,6 +1251,13 @@ class OrvixDesktop:
                                   activeforeground=TEXT, relief="flat", bd=0,
                                   font=("Segoe UI Semibold", 7, "bold"), padx=8, pady=3, cursor="hand2")
         self.wake_btn.pack(anchor="w", pady=(4, 0))
+        # Stop Speaking: wired to SpeechEngine.stop_speaking(); safe
+        # to press while ORVIX is silent (a no-op then).
+        self.stop_speech_btn = tk.Button(voice_panel, text="⏹  STOP SPEAKING", command=self._stop_speaking,
+                                         bg="#122137", fg="#c4d4e8", activebackground="#263e58",
+                                         activeforeground=TEXT, relief="flat", bd=0,
+                                         font=("Segoe UI Semibold", 7, "bold"), padx=8, pady=3, cursor="hand2")
+        self.stop_speech_btn.pack(anchor="w", pady=(4, 0))
 
         perf_panel = tk.Frame(bottom_bar, bg="#050b17", width=250)
         perf_panel.pack(side="right", fill="y", padx=(6, 14), pady=8)
@@ -2829,6 +2842,8 @@ class OrvixDesktop:
                     text,
                     str(self.settings.get("voice", "bn-BD-PradeepNeural")),
                     barge_in=bool(self.settings.get("voice_barge_in", True)),
+                    rate=str(self.settings.get("speech_rate", "+0%")),
+                    volume=str(self.settings.get("speech_volume", "+0%")),
                 )
                 barged_in = self.speech.consume_barge_in()
         finally:
@@ -2905,6 +2920,18 @@ class OrvixDesktop:
         if not busy:
             self.entry.focus_set()
 
+    def _stop_speaking(self) -> None:
+        """Stop any in-progress spoken reply (Stop Speaking control).
+
+        Safe to call when nothing is speaking: SpeechEngine's stop is
+        a no-op then. Routed here from the Tk voice panel and, through
+        the events queue, from the WebView home bridge.
+        """
+        try:
+            self.speech.stop_speaking()
+        except Exception:
+            pass
+
     def _toggle_wake_word(self) -> None:
         if self.wake_enabled:
             self.wake_enabled = False
@@ -2913,11 +2940,12 @@ class OrvixDesktop:
             self._push_activity("Wake-word mode disabled")
             self._write_message("SYSTEM", "Wake-word mode is off. The microphone will no longer be monitored in the background.", "system")
             return
+        wake_phrase = str(self.settings.get("wake_phrase", "hey orvix"))
         consent = messagebox.askyesno(
             "Enable wake-word mode",
             "Enable continuous wake-word listening?\n\n"
             "The microphone will be monitored in the background. Speech clips are sent to Google's online speech recognition service. "
-            "Tasks will only start when ORVIX / অরভিক্স is detected. You can turn this off anytime.",
+            f"Tasks will only start when the wake phrase ‘{wake_phrase}’ is detected. You can turn this off anytime.",
             parent=self.root,
             icon="warning",
         )
@@ -2928,7 +2956,7 @@ class OrvixDesktop:
         self.core_mode = "WAKE WORD ACTIVE"
         self.status_dot.configure(text="● WAKE WORD ON", fg=GREEN)
         self._push_activity("Wake-word listening enabled")
-        self._write_message("SYSTEM", "Wake-word mode enabled. Say ‘Orvix’ or ‘অরভিক্স’ followed by your command. Disable it from the top bar anytime.", "system")
+        self._write_message("SYSTEM", f"Wake-word mode enabled. Say ‘{wake_phrase}’ followed by your command. Disable it from the top bar anytime.", "system")
         self._render_core()
         self._start_wake_listener()
 
@@ -2964,9 +2992,13 @@ class OrvixDesktop:
                 continue
             if not self.wake_enabled:
                 return
-            match = re.search(r"\borvix\b|অরভিক্স|অরভিক্স", heard, flags=re.IGNORECASE)
-            if match:
-                command = heard[match.end():].strip(" ,.!?—-:")
+            # Match the CONFIGURED wake phrase (default "hey orvix"),
+            # not the bare assistant name: an utterance triggers only
+            # when the full phrase appears in it, and the command is
+            # the text after the phrase ("" just activates listening).
+            command = match_wake_phrase(
+                heard, self.settings.get("wake_phrase", "hey orvix"))
+            if command is not None:
                 try:
                     self.root.after(0, self._wake_word_detected, heard, command)
                 except tk.TclError:
@@ -3247,6 +3279,20 @@ class OrvixDesktop:
         speak_var = tk.BooleanVar(value=bool(self.settings.get("speak_replies", True)))
         tk.Checkbutton(pad, text="Speak assistant replies aloud (internet required for neural voice)", variable=speak_var, bg=BG, fg=TEXT, activebackground=BG, activeforeground=TEXT, selectcolor=CARD, font=("Segoe UI", 9)).pack(anchor="w", pady=(10, 6))
 
+        tk.Label(pad, text="Speech rate (neural voice)", bg=BG, fg="#cbd7e8", font=("Segoe UI Semibold", 9)).pack(anchor="w", pady=(6, 5))
+        rate_var = tk.StringVar(value=str(self.settings.get("speech_rate", "+0%")))
+        rate_combo = ttk.Combobox(pad, textvariable=rate_var, state="readonly", values=["-50%", "-25%", "-10%", "+0%", "+10%", "+25%", "+50%", "+100%"])
+        rate_combo.pack(fill="x")
+
+        tk.Label(pad, text="Speech volume (neural voice)", bg=BG, fg="#cbd7e8", font=("Segoe UI Semibold", 9)).pack(anchor="w", pady=(12, 5))
+        volume_var = tk.StringVar(value=str(self.settings.get("speech_volume", "+0%")))
+        volume_combo = ttk.Combobox(pad, textvariable=volume_var, state="readonly", values=["-100%", "-50%", "-25%", "+0%", "+25%", "+50%", "+100%"])
+        volume_combo.pack(fill="x")
+
+        tk.Label(pad, text="Wake phrase (the phrase that activates wake-word listening)", bg=BG, fg="#cbd7e8", font=("Segoe UI Semibold", 9)).pack(anchor="w", pady=(12, 5))
+        wake_var = tk.StringVar(value=str(self.settings.get("wake_phrase", "hey orvix")))
+        ttk.Entry(pad, textvariable=wake_var).pack(fill="x", ipady=4)
+
         startup_var = tk.BooleanVar(value=is_windows_startup_enabled())
         tk.Checkbutton(
             pad,
@@ -3356,6 +3402,9 @@ class OrvixDesktop:
             new["voice_vad_enabled"] = bool(vad_var.get())
             new["voice_barge_in"] = bool(barge_var.get())
             try:
+                new["speech_rate"] = validate_speech_rate(rate_var.get())
+                new["speech_volume"] = validate_speech_volume(volume_var.get())
+                new["wake_phrase"] = validate_wake_phrase(wake_var.get())
                 new["api_base_url"] = validate_api_base_url(new["api_base_url"])
                 if not new["model"]:
                     raise ValueError("Model name cannot be empty.")
@@ -3370,6 +3419,8 @@ class OrvixDesktop:
                 return
             key_saved = set_api_key(key_var.get().strip())
             self.settings = new
+            if hasattr(self, "wake_phrase_label"):
+                self.wake_phrase_label.configure(text=str(new.get("wake_phrase", "hey orvix")))
             self.agent.update_settings(self.settings)
             self.model_status.configure(text=self._model_status_text())
             if hasattr(self, "llm_detail_label"):
