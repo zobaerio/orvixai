@@ -17,6 +17,18 @@ from orvix.agent import OrvixAgent
 from orvix.task_planner import classify_plan_step_kind, format_plan_guidance, generate_task_plan, should_generate_task_plan
 from orvix.settings import auto_configure_from_api_key, get_api_key, load_settings, save_settings, set_api_key, test_api_connection, validate_api_base_url, validate_api_key_transport
 from orvix.speech import SpeechEngine
+from orvix.core_states import CoreState
+from orvix.floating_core import FloatingCoreWidget
+from orvix.overlay import (
+    CLICK_TOGGLE_DELAY_MS, OVERLAY_HEIGHT, OVERLAY_ORB_SIZE, OVERLAY_WIDTH,
+    is_click, overlay_window_height, palette_open_geometry, submit_overlay_command,
+)
+from orvix.hud_data import build_hud_panels
+from orvix.control_center import build_snapshot as _build_control_center_snapshot
+from orvix.taskqueue import TaskQueue
+from orvix.router import BudgetTracker
+from orvix.security import AuditLog
+from orvix.memory import LessonLog, MemoryStore
 from orvix.avatar_studio import launch_avatar_studio
 from orvix.health import collect_system_health, summarize_system_health
 from orvix.task_store import TaskStore, filter_task_records, build_safe_diagnostics
@@ -82,6 +94,8 @@ class OrvixDesktop:
         self.wake_enabled = False
         self._wake_thread: threading.Thread | None = None
         self._speech_active = threading.Event()
+        self._hero_core: FloatingCoreWidget | None = None
+        self._hud_core: FloatingCoreWidget | None = None
         self._configure_styles()
         self._prepare_avatar_images()
         self._build_ui()
@@ -142,11 +156,12 @@ class OrvixDesktop:
                         takefocus=True)
         self._floating_orb = orb
         orb.pack(padx=8, pady=(7, 0))
-        orb.create_oval(5, 5, 67, 67, outline="#164e63", width=5)
-        orb.create_oval(11, 11, 61, 61, outline=ACCENT, width=2)
-        orb.create_oval(19, 19, 53, 53, fill="#0e2c3c", outline="#67e8f9", width=1)
-        orb.create_text(36, 36, text="J", fill="#e0fbff",
-                        font=("Segoe UI Black", 25, "bold"))
+        # Animated Floating AI Core on the existing HUD canvas. The widget
+        # only deletes its own tagged items, so the status dot below and
+        # the drag/tooltip bindings on this canvas keep working unchanged.
+        self._hud_core = FloatingCoreWidget(canvas=orb, size=72, bg="#07111f")
+        self._hud_core.set_level_provider(self._core_audio_level)
+        self._hud_core.start()
         self._floating_status_dot = orb.create_oval(53, 5, 66, 18, fill="#64748b", outline="#07111f", width=2)
         label = tk.Label(shell, text="ORVIX", bg="#07111f", fg=ACCENT,
                          font=("Segoe UI", 8, "bold"), cursor="fleur")
@@ -174,6 +189,29 @@ class OrvixDesktop:
                   activeforeground=TEXT, relief="flat", bd=0,
                   font=("Segoe UI", 8, "bold"), pady=3, cursor="hand2")
         self._floating_mic.pack(fill="x", padx=7, pady=(0, 6))
+        # Overlay command palette (mini/overlay mode only): a compact
+        # text entry + mic button that appears under the orb on a single
+        # click. Hidden until toggled. Submitting routes through
+        # _send_text — the same pipeline as the main composer, with the
+        # app's existing tools, queueing and approval gates.
+        self._overlay_palette_open = False
+        self._overlay_click_after_id: str | None = None
+        palette = tk.Frame(shell, bg="#07111f")
+        self._floating_palette = palette
+        self._floating_command_entry = ttk.Entry(palette, font=("Segoe UI", 8), width=5)
+        self._floating_command_entry.pack(side="left", fill="x", expand=True, padx=(0, 3))
+        self._floating_command_entry.bind("<Return>", lambda _e: self._submit_overlay_command())
+        self._floating_command_entry.bind("<Escape>", lambda _e: self._toggle_overlay_palette(False))
+        palette_go = tk.Button(palette, text="➤", command=self._submit_overlay_command,
+                  bg="#123047", fg=TEXT, activebackground="#1b5268",
+                  activeforeground=TEXT, relief="flat", bd=0,
+                  font=("Segoe UI", 8, "bold"), padx=3, cursor="hand2")
+        palette_go.pack(side="left")
+        palette_mic = tk.Button(palette, text="🎙", command=self._floating_listen,
+                  bg="#0e2c3c", fg="#a5f3fc", activebackground="#164e63",
+                  activeforeground=TEXT, relief="flat", bd=0,
+                  font=("Segoe UI", 8), padx=2, cursor="hand2")
+        palette_mic.pack(side="left", padx=(3, 0))
         # Build every referenced widget before attaching tooltips. Accessing the
         # mode button or resize grip before these constructors run crashes startup.
         self._floating_mode_button = tk.Button(shell, text="EXPAND" if self._floating_mini else "MINI", command=self._toggle_floating_mode, bg="#122137", fg=TEXT, activebackground="#263e58", activeforeground=TEXT, relief="flat", bd=0, font=("Segoe UI", 7, "bold"), pady=2, cursor="hand2")
@@ -191,7 +229,8 @@ class OrvixDesktop:
         for widget in (shell, orb, label):
             widget.bind("<ButtonPress-1>", self._floating_drag_start)
             widget.bind("<B1-Motion>", self._floating_drag_move)
-            widget.bind("<Double-Button-1>", lambda _event: self._show_main_from_floating())
+            widget.bind("<ButtonRelease-1>", self._floating_click_release)
+            widget.bind("<Double-Button-1>", self._floating_double_click)
             widget.bind("<Button-3>", self._show_floating_context_menu)
         self._floating_hud.protocol("WM_DELETE_WINDOW", self._hide_floating_hud)
         if self._floating_mini:
@@ -267,14 +306,27 @@ class OrvixDesktop:
 
     def _apply_floating_mode(self) -> None:
         if self._floating_mini:
+            # Mini mode IS the small overlay orb: just the animated core
+            # in a compact always-on-top bubble, draggable anywhere.
             self._floating_label.pack_forget()
             self._floating_task_status.pack_forget()
             self._floating_controls.pack_forget()
             self._floating_mic.pack_forget()
             self._floating_mode_button.configure(text="EXPAND")
-            self._floating_hud.geometry(f"80x104+{self._floating_hud.winfo_x()}+{self._floating_hud.winfo_y()}")
-            self._floating_orb.pack_configure(padx=3, pady=(3, 0))
+            try:
+                self._hud_core.resize(OVERLAY_ORB_SIZE)
+            except Exception:
+                pass
+            self._floating_hud.geometry(f"{OVERLAY_WIDTH}x{OVERLAY_HEIGHT}+{self._floating_hud.winfo_x()}+{self._floating_hud.winfo_y()}")
+            self._floating_orb.pack_configure(padx=6, pady=(3, 0))
         else:
+            if getattr(self, "_overlay_palette_open", False):
+                self._overlay_palette_open = False
+                self._floating_palette.pack_forget()
+            try:
+                self._hud_core.resize(72)
+            except Exception:
+                pass
             self._floating_orb.pack_configure(padx=8, pady=(7, 0))
             self._floating_label.pack(pady=(1, 0))
             self._floating_task_status.pack(pady=(0, 2))
@@ -309,7 +361,7 @@ class OrvixDesktop:
         if not hasattr(self, "_floating_resize_origin"):
             return
         sx, sy, sw, sh = self._floating_resize_origin
-        minimum_w, minimum_h = ((80, 104) if self._floating_mini else (92, 150))
+        minimum_w, minimum_h = ((OVERLAY_WIDTH, overlay_window_height(bool(getattr(self, "_overlay_palette_open", False)))) if self._floating_mini else (92, 150))
         max_w = max(minimum_w, min(320, self.root.winfo_screenwidth() - self._floating_hud.winfo_x()))
         max_h = max(minimum_h, min(400, self.root.winfo_screenheight() - self._floating_hud.winfo_y()))
         width = self._bounded_int(sw + event.x_root - sx, sw, minimum_w, max_w)
@@ -324,6 +376,7 @@ class OrvixDesktop:
         menu.add_command(label="Open ORVIX", command=self._show_main_from_floating)
         menu.add_command(label="Reset HUD Position", command=self._reset_floating_position)
         menu.add_command(label="Switch Mini / Expanded", command=self._toggle_floating_mode)
+        menu.add_command(label="Command Palette", command=self._menu_overlay_palette)
         menu.add_command(label="Unpin from top" if self._floating_pin else "Pin on top",
                          command=self._toggle_floating_pin)
         opacity_menu = tk.Menu(menu, tearoff=0, bg="#0b1728", fg=TEXT,
@@ -333,6 +386,7 @@ class OrvixDesktop:
         menu.add_cascade(label="HUD Opacity", menu=opacity_menu)
         menu.add_separator()
         menu.add_command(label="Hide Floating HUD", command=self._hide_floating_hud)
+        menu.add_command(label="Quit Overlay", command=self._quit_floating_overlay)
         try:
             menu.tk_popup(event.x_root, event.y_root)
         finally:
@@ -361,8 +415,15 @@ class OrvixDesktop:
     def _floating_drag_start(self, event: tk.Event) -> None:
         self._floating_drag_origin = (event.x_root - self._floating_hud.winfo_x(),
                                       event.y_root - self._floating_hud.winfo_y())
+        # Remember the press point so a release can be told apart from
+        # a drag: a genuine click (overlay palette toggle) barely moves.
+        self._floating_press_pos = (event.x_root, event.y_root)
+        self._floating_drag_moved = False
 
     def _floating_drag_move(self, event: tk.Event) -> None:
+        press = getattr(self, "_floating_press_pos", None)
+        if press is not None and not is_click(press, (event.x_root, event.y_root)):
+            self._floating_drag_moved = True
         if self._floating_drag_origin is None:
             return
         x = max(0, min(event.x_root - self._floating_drag_origin[0],
@@ -420,6 +481,108 @@ class OrvixDesktop:
         except Exception as exc:
             self._write_message("SYSTEM", f"Voice input could not start ({type(exc).__name__}). Check microphone and speech settings.", "system")
 
+    # -- Small overlay orb: click / palette / submit ------------------
+    # In mini mode the floating window is the small overlay orb. A
+    # single click (not a drag) toggles its compact command palette;
+    # a double-click opens the main window instead. The overlay floats
+    # over other desktop applications via the window's always-on-top
+    # flag — it does not embed inside them; commands run through the
+    # app's existing pipeline (see _submit_overlay_command).
+    def _floating_click_release(self, event: tk.Event) -> None:
+        """Single click on the overlay orb toggles the command palette."""
+        if getattr(self, "_floating_drag_moved", False):
+            return  # that was a drag, not a click
+        if time.monotonic() - getattr(self, "_overlay_last_double_at", 0.0) < 0.35:
+            return  # this release belongs to a double-click
+        if not getattr(self, "_floating_mini", False):
+            return  # palette belongs to the small overlay mode
+        self._cancel_overlay_click()
+        try:
+            self._overlay_click_after_id = self._floating_hud.after(
+                CLICK_TOGGLE_DELAY_MS, self._overlay_click_toggle_now)
+        except tk.TclError:
+            self._overlay_click_after_id = None
+
+    def _overlay_click_toggle_now(self) -> None:
+        self._overlay_click_after_id = None
+        self._toggle_overlay_palette()
+
+    def _cancel_overlay_click(self) -> None:
+        pending = getattr(self, "_overlay_click_after_id", None)
+        if pending is not None:
+            try:
+                self._floating_hud.after_cancel(pending)
+            except tk.TclError:
+                pass
+            self._overlay_click_after_id = None
+
+    def _floating_double_click(self, _event: tk.Event | None = None) -> None:
+        """Double-click opens the main window (cancels the palette toggle)."""
+        self._overlay_last_double_at = time.monotonic()
+        self._cancel_overlay_click()
+        self._show_main_from_floating()
+
+    def _toggle_overlay_palette(self, open_state: bool | None = None) -> None:
+        """Show/hide the overlay command palette under the orb."""
+        if not getattr(self, "_floating_mini", False):
+            return
+        target = (not self._overlay_palette_open) if open_state is None else bool(open_state)
+        if target == self._overlay_palette_open:
+            return
+        self._overlay_palette_open = target
+        if target:
+            self._floating_palette.pack(fill="x", padx=3, pady=(2, 3),
+                                        before=self._floating_mode_button)
+        else:
+            self._floating_palette.pack_forget()
+        self._apply_overlay_geometry()
+        if target:
+            self._floating_command_entry.focus_set()
+
+    def _apply_overlay_geometry(self) -> None:
+        """Resize the overlay window for the palette state, keeping the
+        whole window (palette included) on screen."""
+        try:
+            x, y, _height = palette_open_geometry(
+                self._floating_hud.winfo_x(), self._floating_hud.winfo_y(),
+                palette_open=self._overlay_palette_open,
+                screen_width=self.root.winfo_screenwidth(),
+                screen_height=self.root.winfo_screenheight())
+            self._floating_hud.geometry(
+                f"{OVERLAY_WIDTH}x{overlay_window_height(self._overlay_palette_open)}+{x}+{y}")
+            self._schedule_floating_preferences_save()
+        except tk.TclError:
+            pass
+
+    def _menu_overlay_palette(self) -> None:
+        """Context-menu entry: switch to the overlay and open its palette."""
+        if not self._floating_mini:
+            self._toggle_floating_mode()
+        self._toggle_overlay_palette(True)
+
+    def _submit_overlay_command(self) -> None:
+        """Route a palette command through the main command pipeline.
+
+        Uses _send_text — exactly the entry point of the main window's
+        SEND button — so the command executes with the app's existing
+        tools, task queueing and approval gates.
+        """
+        entry = self._floating_command_entry
+        if submit_overlay_command(entry.get(), self._send_text):
+            entry.delete(0, "end")
+            self._toggle_overlay_palette(False)
+            # Same pattern as the floating MIC flow: bring the workspace
+            # forward so progress and any approval prompts are visible.
+            self._show_main_from_floating()
+
+    def _quit_floating_overlay(self) -> None:
+        """Dismiss the overlay orb (Ctrl+Shift+J or the main window's
+        FLOATING HUD button brings it back)."""
+        self._cancel_overlay_click()
+        if getattr(self, "_overlay_palette_open", False):
+            self._toggle_overlay_palette(False)
+        self._hide_floating_hud()
+
     def _floating_hud_hotkey(self, _event: tk.Event | None = None) -> str:
         """Toggle the HUD while the ORVIX application has keyboard focus."""
         try:
@@ -442,6 +605,57 @@ class OrvixDesktop:
 
     def _hide_floating_hud(self) -> None:
         self._floating_hud.withdraw()
+
+    # -- Floating AI Core bridge -------------------------------------
+    # The animated core (hero + floating HUD) is driven only by real
+    # application events: task lifecycle, voice capture/playback and
+    # status changes funnel through _set_core_state. See FLOATING_CORE.md.
+    def _set_core_state(self, state: CoreState) -> None:
+        for widget in (self._hero_core, self._hud_core):
+            if widget is not None:
+                try:
+                    widget.set_state(state)
+                except Exception:
+                    pass  # core visuals must never break the assistant
+        # HUD panels also refresh on core state changes, not only on
+        # the throttled timer, so task transitions show up immediately.
+        if hasattr(self, "hud_stat_labels"):
+            self._update_hud_panel_labels()
+
+    def _core_audio_level(self) -> None:
+        """Audio level source for the core's LISTENING/SPEAKING states.
+
+        SpeechEngine exposes no live level: speech_recognition does not
+        report microphone RMS and pygame playback does not report an
+        output level. Returning None is deliberate — the hook is wired
+        so a future level-capable engine can be dropped in here, and
+        until then the core uses its state-driven pulse instead of
+        fabricated audio data.
+        """
+        return None
+
+    def _core_after_speech(self) -> None:
+        """Return the core to IDLE when speech playback has ended."""
+        for widget in (self._hero_core, self._hud_core):
+            if widget is not None and widget.state is CoreState.SPEAKING:
+                try:
+                    widget.set_state(CoreState.IDLE)
+                except Exception:
+                    pass
+
+    def _core_state_for_status(self, status: str) -> CoreState:
+        text = status.upper()
+        if "LISTEN" in text:
+            return CoreState.LISTENING
+        if "THINK" in text:
+            return CoreState.THINKING
+        if "EXECUT" in text:
+            return CoreState.EXECUTING
+        if "CANCELL" in text:
+            return CoreState.PROCESSING
+        if "VOICE RECEIVED" in text:
+            return CoreState.PROCESSING
+        return CoreState.IDLE
 
     def _configure_styles(self) -> None:
         style = ttk.Style(self.root)
@@ -609,6 +823,33 @@ class OrvixDesktop:
                                  fg=MUTED, font=("Segoe UI", 8))
         self.os_value.pack(anchor="w", pady=(2, 0))
 
+        # Control Center panel — HUD data from real state only: the
+        # orvix Control Center snapshot (agents, providers, background
+        # queue, budget, audit log) plus this app's own task records.
+        # Assembled by orvix/hud_data.py and refreshed by
+        # _refresh_hud_panels; missing data shows a dash, never a guess.
+        hud_panel = self._panel(left)
+        hud_panel.pack(fill="x", pady=(0, 9))
+        self._panel_title(hud_panel, "Control center", "LIVE DATA")
+        hud_pad = tk.Frame(hud_panel, bg=PANEL)
+        hud_pad.pack(fill="x", padx=13, pady=(0, 10))
+        self.hud_stat_labels: dict[str, tk.Label] = {}
+        for key in ("agents", "models", "health", "queue", "budget", "memory"):
+            stat = tk.Label(hud_pad, text=f"{key.upper()}  —", bg=PANEL, fg=MUTED,
+                            font=("Consolas", 8), anchor="w")
+            stat.pack(fill="x", anchor="w", pady=1)
+            self.hud_stat_labels[key] = stat
+        tk.Frame(hud_pad, bg=BORDER, height=1).pack(fill="x", pady=(6, 5))
+        tk.Label(hud_pad, text="EXECUTION LOG", bg=PANEL, fg="#7e91ab",
+                 font=("Segoe UI", 7, "bold")).pack(anchor="w")
+        self.hud_log_labels: list[tk.Label] = []
+        for _ in range(3):
+            log_label = tk.Label(hud_pad, text="", bg=PANEL, fg="#7e91ab",
+                                 font=("Consolas", 7), anchor="w",
+                                 wraplength=190, justify="left")
+            log_label.pack(fill="x", anchor="w")
+            self.hud_log_labels.append(log_label)
+
         char_panel = self._panel(left)
         char_panel.pack(fill="x", pady=(0, 9))
         self._panel_title(char_panel, "Choose your character", "3 PROFILES")
@@ -684,6 +925,14 @@ class OrvixDesktop:
         self.core_canvas = tk.Canvas(hero, bg="#061020", highlightthickness=0, height=320)
         self.core_canvas.pack(fill="both", expand=True, padx=5, pady=(0, 5))
         self.core_canvas.bind("<Configure>", lambda _e: self._render_core())
+        # Animated Floating AI Core: a living energy core replaces the old
+        # static avatar-rig circle in the hero. It is a sibling canvas over
+        # the hero panel; _render_core keeps drawing grid/callouts/waveform
+        # on core_canvas underneath it.
+        self._hero_core = FloatingCoreWidget(hero, size=250, bg="#061020")
+        self._hero_core.canvas.place(relx=0.15, rely=0.56, anchor="center")
+        self._hero_core.set_level_provider(self._core_audio_level)
+        self._hero_core.start()
         self.core_mode = "READY"
         self._animation_phase = 0.0
         self._blink_frames = 0
@@ -766,6 +1015,12 @@ class OrvixDesktop:
             label.pack(fill="x", anchor="w", pady=5)
             self.activity_labels.append(label)
         self._refresh_activity()
+        # Most recent task outcomes from the real TaskStore records,
+        # refreshed together with the Control Center panel data.
+        self.hud_recent_label = tk.Label(task_panel, text="", bg=PANEL, fg=MUTED,
+                                         font=("Segoe UI", 8), wraplength=205,
+                                         justify="left", anchor="w")
+        self.hud_recent_label.pack(fill="x", padx=12, pady=(0, 10))
         task_buttons = tk.Frame(task_panel, bg=PANEL)
         task_buttons.pack(fill="x", padx=10, pady=(0, 10))
         self.run_queue_btn = tk.Button(
@@ -817,13 +1072,15 @@ class OrvixDesktop:
         footer = tk.Frame(self.root, bg="#050b17", height=27)
         footer.pack(fill="x", side="bottom")
         footer.pack_propagate(False)
-        tk.Label(footer, text="● SYSTEM READY", bg="#050b17", fg=GREEN,
-                 font=("Segoe UI", 7, "bold")).pack(side="left", padx=16, pady=6)
+        self.footer_status_label = tk.Label(footer, text="● SYSTEM READY", bg="#050b17", fg=GREEN,
+                 font=("Segoe UI", 7, "bold"))
+        self.footer_status_label.pack(side="left", padx=16, pady=6)
         tk.Label(footer, text="zobaerio  ·  ORVIX Desktop AI  ·  SAFE LOCAL CONTROLS",
                  bg="#050b17", fg="#637b98", font=("Segoe UI", 7)).pack(side="right", padx=16, pady=6)
 
         self._update_clock()
         self._refresh_stats()
+        self._refresh_hud_panels()
         self._animate_core()
         self._responsive_after_id: str | None = None
         self._right_rail_hidden = False
@@ -884,42 +1141,16 @@ class OrvixDesktop:
         for y in range(0, height, 30):
             canvas.create_line(0, y, width, y, fill=grid_color, width=1)
         phase = getattr(self, "_animation_phase", 0.0)
-        cx, cy = int(width * 0.29), int(height * 0.52)
-        base = min(133, int(height * 0.43))
-        # Rotating orbital rings and arcs
-        for idx, radius in enumerate((base + 23, base + 8, base - 8, base - 22)):
-            color = ("#146488", "#1b89b8", "#2352a0", "#1e416a")[idx]
-            canvas.create_oval(cx-radius, cy-radius, cx+radius, cy+radius,
-                               outline=color, width=1 if idx != 1 else 2)
-        for idx, radius in enumerate((base + 34, base - 31)):
-            start = int((phase * 70 + idx * 145) % 360)
-            canvas.create_arc(cx-radius, cy-radius, cx+radius, cy+radius,
-                              start=start, extent=115, style="arc",
-                              outline=ACCENT if idx == 0 else "#7c8cff", width=3)
-        # Orbiting particles
         import math
-        for idx in range(8):
-            angle = phase + (math.tau * idx / 8)
-            radius = base + (24 if idx % 2 == 0 else 2)
-            px = cx + math.cos(angle) * radius
-            py = cy + math.sin(angle) * radius * 0.68
-            canvas.create_oval(px-3, py-3, px+3, py+3,
-                               fill=ACCENT if idx % 2 == 0 else "#ffb36b", outline="")
-        # The supplied stills remain profile thumbnails only. Do not fake a 3D body
-        # by rotating the bitmap; the actual procedural 3D avatar opens in Avatar Studio.
-        pulse = 1.0 + 0.025 * math.sin(phase * 1.7)
-        orb_r = 68 * pulse
-        for radius, color, width_px in ((orb_r + 28, "#155f88", 1), (orb_r + 12, "#1789b5", 2), (orb_r, ACCENT, 2)):
-            canvas.create_oval(cx-radius, cy-radius, cx+radius, cy+radius, outline=color, width=width_px)
-        canvas.create_oval(cx-orb_r*.70, cy-orb_r*.70, cx+orb_r*.70, cy+orb_r*.70,
-                           fill="#0d2e4b", outline="#3cc6ee", width=2)
-        canvas.create_text(cx, cy-8, text="3D", fill="#dffaff", font=("Segoe UI Black", 31, "bold"))
-        canvas.create_text(cx, cy+25, text="AVATAR RIG", fill=ACCENT, font=("Consolas", 9, "bold"))
-        for idx in range(6):
-            angle = phase * 0.7 + idx * math.tau / 6
-            radius = orb_r + 20 + (idx % 2) * 10
-            px, py = cx + math.cos(angle) * radius, cy + math.sin(angle) * radius * .63
-            canvas.create_oval(px-3, py-3, px+3, py+3, fill=ACCENT if idx % 2 else ORANGE, outline="")
+        # The living energy core itself is drawn by the FloatingCoreWidget
+        # (orvix/floating_core.py) on its own canvas above this one; this
+        # method now only paints the grid, callouts and waveform beneath it.
+        # Keep the widget sized to the hero panel.
+        if getattr(self, "_hero_core", None) is not None:
+            try:
+                self._hero_core.resize(max(170, min(260, height - 56)))
+            except Exception:
+                pass
         # Core callout
         text_x = min(width - 20, int(width * 0.62))
         compact_canvas = width < 520
@@ -1041,6 +1272,85 @@ class OrvixDesktop:
             self.mem_value.configure(text="MEMORY  MONITOR N/A")
         self.root.after(1800, self._refresh_stats)
 
+    # -- HUD home panels (Control Center data) ------------------------
+    def _hud_data_dir(self) -> Path:
+        """Shared ORVIX data dir — the same convention as `python -m orvix`."""
+        raw = os.environ.get("ORVIX_DATA_DIR")
+        return Path(raw) if raw else Path.home() / ".orvix"
+
+    def _hud_control_center_snapshot(self) -> dict | None:
+        """Real Control Center snapshot over the shared data dir (the
+        same task queue / budget / audit files the CLI and Chief use).
+        Returns None when the snapshot cannot be built."""
+        try:
+            if getattr(self, "_hud_cc_objects", None) is None:
+                data = self._hud_data_dir()
+                data.mkdir(parents=True, exist_ok=True)
+                self._hud_cc_objects = (
+                    TaskQueue(data / "task_queue.db"),
+                    BudgetTracker(path=data / "budget.json"),
+                    AuditLog(data / "audit.jsonl"),
+                    MemoryStore(data / "memory.json"),
+                    LessonLog(data / "lessons.json"),
+                )
+            queue, budget, audit, _memory, _lessons = self._hud_cc_objects
+            return _build_control_center_snapshot(queue=queue, budget=budget, audit_log=audit)
+        except Exception:
+            return None
+
+    def _update_hud_panel_labels(self) -> None:
+        """Rebuild the HUD panel lines from real state and apply them.
+        Any failure leaves the previous lines in place — HUD data must
+        never break the assistant UI."""
+        if not hasattr(self, "hud_stat_labels"):
+            return
+        try:
+            snapshot = self._hud_control_center_snapshot()
+            try:
+                app_tasks = self.task_store.list_tasks(limit=12)
+            except Exception:
+                app_tasks = None
+            memory_count = lesson_count = None
+            objects = getattr(self, "_hud_cc_objects", None)
+            if objects is not None:
+                try:
+                    memory_count = len(objects[3].list())
+                except Exception:
+                    pass
+                try:
+                    lesson_count = len(objects[4].list())
+                except Exception:
+                    pass
+            data = build_hud_panels(snapshot, app_tasks,
+                                    memory_count=memory_count,
+                                    lesson_count=lesson_count)
+            for key in ("agents", "models", "health", "queue", "budget", "memory"):
+                self.hud_stat_labels[key].configure(text=getattr(data, key))
+            for idx, label in enumerate(self.hud_log_labels):
+                text = data.log_lines[idx] if idx < len(data.log_lines) else ""
+                label.configure(text=("› " + text) if text else "")
+            if hasattr(self, "hud_recent_label"):
+                self.hud_recent_label.configure(text="\n".join(data.recent_tasks))
+            if hasattr(self, "footer_status_label"):
+                mode = (getattr(self, "core_mode", "READY") or "READY").upper()
+                self.footer_status_label.configure(
+                    text=f"● {mode}",
+                    fg=ORANGE if getattr(self, "_busy", False) else GREEN)
+        except Exception:
+            pass
+
+    def _refresh_hud_panels(self) -> None:
+        """Throttled HUD refresh (2 s); pauses while the main window is
+        minimised or not viewable instead of rebuilding invisible data."""
+        if not self.root.winfo_exists():
+            return
+        try:
+            if self.root.state() != "iconic" and self.root.winfo_viewable():
+                self._update_hud_panel_labels()
+        except tk.TclError:
+            return
+        self.root.after(2000, self._refresh_hud_panels)
+
     @staticmethod
     def _draw_bar(canvas: tk.Canvas, value: int, color: str) -> None:
         canvas.delete("all")
@@ -1094,6 +1404,7 @@ class OrvixDesktop:
             self.cancel_task_btn.configure(state="disabled", text="CANCELLATION REQUESTED")
         self.core_mode = "CANCELLATION REQUESTED"
         self.status_dot.configure(text="● CANCELLING", fg=ORANGE)
+        self._set_core_state(CoreState.PROCESSING)
         self._render_core()
         self._push_activity("Cancellation requested")
         queue_note = ""
@@ -1935,6 +2246,7 @@ class OrvixDesktop:
             return
         self.core_mode = "EXECUTING"
         self.status_dot.configure(text="● EXECUTING", fg=ACCENT)
+        self._set_core_state(CoreState.EXECUTING)
         self._render_core()
 
     def _work(self, text: str, task_id: str | None, cancel_event: threading.Event) -> None:
@@ -2072,6 +2384,10 @@ class OrvixDesktop:
             self._active_task_cancel_event = None
             self._active_task_command = ""
         self._set_busy(False, "● READY")
+        if task_status == "failed":
+            self._set_core_state(CoreState.ERROR)
+        elif task_status in ("completed", "partial"):
+            self._set_core_state(CoreState.COMPLETED)
         self._refresh_queue_button()
         if self.settings.get("speak_replies", True):
             threading.Thread(target=self._speak_safely, args=(result, self._queue_armed), daemon=True).start()
@@ -2085,10 +2401,15 @@ class OrvixDesktop:
         self._speech_active.set()
         try:
             if len(text) <= 1600 and not text.startswith("AI provider error"):
+                try:
+                    self.root.after(0, self._set_core_state, CoreState.SPEAKING)
+                except tk.TclError:
+                    pass
                 self.speech.speak(text, str(self.settings.get("voice", "bn-BD-PradeepNeural")))
         finally:
             self._speech_active.clear()
             try:
+                self.root.after(0, self._core_after_speech)
                 if continue_queue and self._queue_armed:
                     self.root.after(150, self._start_next_queued_task)
                 elif self.wake_enabled:
@@ -2121,6 +2442,7 @@ class OrvixDesktop:
     def _voice_failed(self, message: str) -> None:
         self._busy = False
         self._set_busy(False, "● READY")
+        self._set_core_state(CoreState.ERROR)
         self.mic_btn.configure(text="🎙  Speak", state="normal")
         self._write_message("SYSTEM", message, "system")
 
@@ -2129,6 +2451,7 @@ class OrvixDesktop:
             status = "● WAKE WORD ON"
         self.core_mode = status.replace("●", "").strip()
         self.status_dot.configure(text=status, fg=ORANGE if busy else GREEN)
+        self._set_core_state(self._core_state_for_status(status))
         if hasattr(self, "core_canvas"):
             self._render_core()
         # Keep text entry/send available while a task runs so a user can queue
