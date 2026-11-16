@@ -59,6 +59,10 @@ DEFAULTS: dict[str, Any] = {
     "floating_hud_height": 164,
     "floating_hud_opacity": 1.0,
     "autonomous_brain": False,
+    # WebView home: open the HTML home window at startup. Defaults to
+    # True, matching webview_home_enabled's fallback when the key is
+    # absent; the Settings checkbox persists the user's choice.
+    "webview_home": True,
     # Continuous voice: VAD segments listening on speech boundaries
     # (with automatic fallback to the classic listener on any capture
     # failure) and barge-in lets the user interrupt neural-voice

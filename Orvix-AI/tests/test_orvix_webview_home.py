@@ -352,6 +352,30 @@ class StaticWebHomeTests(unittest.TestCase):
     def test_stats_are_data_driven(self):
         self.assertIn('data-stat="cpu"', self.index_html)
 
+    def test_profile_button_is_wired(self):
+        # The avatar/profile button must have an id and a real handler:
+        # it opens the console through the bridge, like the Settings
+        # nav, instead of being a dead button.
+        self.assertIn('id="profileButton"', self.index_html)
+        self.assertIn("profileButton", self.app_js)
+        self.assertIn("openConsole", self.app_js)
+
+    def test_notifications_panel_collects_system_messages(self):
+        # The bell toggles a real panel fed by the SYSTEM messages the
+        # bridge pushes; the old canned toast must be gone.
+        self.assertIn('id="notificationsPanel"', self.index_html)
+        self.assertIn('id="notificationsList"', self.index_html)
+        self.assertIn("No notifications yet.", self.index_html)
+        self.assertIn("notificationsPanel", self.app_js)
+        self.assertIn("renderNotifications", self.app_js)
+        self.assertIn("isSystemMessage", self.app_js)
+        self.assertNotIn('toast("No new notifications.")', self.app_js)
+
+    def test_footer_links_point_at_real_repo_only(self):
+        self.assertIn("https://github.com/zobaerio/orvixai", self.index_html)
+        self.assertNotIn('aria-label="YouTube"', self.index_html)
+        self.assertNotIn('aria-label="Telegram"', self.index_html)
+
 
 if __name__ == "__main__":
     unittest.main()

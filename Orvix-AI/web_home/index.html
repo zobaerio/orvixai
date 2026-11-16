@@ -23,8 +23,13 @@
       <div class="top-status"><span class="online-dot"></span><span id="connectionLabel">Not connected</span></div>
       <div class="clock"><strong id="clockTime">--:--:--</strong><small id="clockDate">Loading date…</small></div>
       <button class="icon-button" id="notificationsButton" aria-label="Notifications">♧</button>
-      <button class="avatar-button" aria-label="Profile">●</button>
+      <button class="avatar-button" id="profileButton" aria-label="Profile">●</button>
     </header>
+
+    <section class="notifications-panel hidden" id="notificationsPanel" aria-label="Notifications panel">
+      <div class="notifications-heading"><b>Notifications</b><button class="text-button" id="notificationsClose">Close</button></div>
+      <div class="notifications-list" id="notificationsList"><p class="notifications-empty">No notifications yet.</p></div>
+    </section>
 
     <main class="dashboard" id="homeView">
       <aside class="left-column">
@@ -120,7 +125,7 @@
       <div class="secondary-cards" id="secondaryCards"></div>
     </section>
 
-    <footer class="footer"><span><b>ORVIX</b> <i>•</i> Built with <em>♥</em> for a Smarter Tomorrow</span><strong>ENGINEERING PRECISION. DIGITAL INNOVATION.</strong><div class="footer-links"><a href="#" aria-label="GitHub">⌘</a><a href="#" aria-label="YouTube">▶</a><a href="#" aria-label="Telegram">➤</a></div></footer>
+    <footer class="footer"><span><b>ORVIX</b> <i>•</i> Built with <em>♥</em> for a Smarter Tomorrow</span><strong>ENGINEERING PRECISION. DIGITAL INNOVATION.</strong><div class="footer-links"><a href="https://github.com/zobaerio/orvixai" aria-label="GitHub">⌘</a></div></footer>
     <div class="toast" id="toast" role="status"></div>
   </div>
   <script src="app.js"></script>

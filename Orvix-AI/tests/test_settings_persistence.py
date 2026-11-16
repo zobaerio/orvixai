@@ -88,6 +88,19 @@ class DurableSettingsTests(unittest.TestCase):
         self.assertEqual(primary["model"], backup["model"])
 
 
+    def test_webview_home_survives_save_and_load(self) -> None:
+        # Regression: webview_home must be an allow-listed DEFAULTS key,
+        # otherwise save_settings drops it and load_settings filters it
+        # out, so the Settings checkbox never persisted.
+        self.assertIn("webview_home", settings.DEFAULTS)
+        self.assertTrue(settings.DEFAULTS["webview_home"])
+        for value in (True, False):
+            with self.subTest(webview_home=value):
+                settings.save_settings({**settings.DEFAULTS, "webview_home": value})
+                self.assertEqual(settings.load_settings()["webview_home"], value)
+                stored = json.loads(self.primary.read_text(encoding="utf-8"))
+                self.assertEqual(stored["webview_home"], value)
+
     def test_floating_hud_preferences_survive_save_and_load(self) -> None:
         preferences = {
             "floating_hud_x": 310,

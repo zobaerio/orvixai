@@ -69,7 +69,8 @@ class AuditLog:
     def count(self) -> int:
         if not self.path.exists():
             return 0
-        return sum(1 for _ in open(self.path, encoding="utf-8"))
+        with open(self.path, encoding="utf-8") as fh:
+            return sum(1 for _ in fh)
 
 
 SENSITIVE_CATEGORIES = ("destructive", "financial", "publishing", "account_change")
