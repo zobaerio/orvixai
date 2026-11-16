@@ -40,6 +40,7 @@ from .home_data import (
     model_status_lines,
     quick_action_tiles,
 )
+from .settings import ENDPOINT_HEALTH_STATES
 from .hud_data import build_task_entries
 from .ui_formatters import format_message_time
 from .version import APP_NAME, APP_VERSION
@@ -172,6 +173,23 @@ def _recent_task_records(app) -> list:
     return records if isinstance(records, list) else []
 
 
+def _probe_health(app):
+    """Probe-backed endpoint health for the payload, or None.
+
+    Reads the desktop app's ``endpoint_health`` attribute, which its
+    periodic probe maintains in the orvix.settings health states
+    (Premium Phase 8a). Only a known state passes through; a minimal
+    app with no probe — or an unrecognised value — yields None, and
+    the page then keeps the configuration-derived ``endpointState``
+    behaviour exactly as before. A probe result, when present, takes
+    precedence over that configuration-derived state on the page.
+    """
+    value = getattr(app, "endpoint_health", None)
+    if value in ENDPOINT_HEALTH_STATES:
+        return value
+    return None
+
+
 def _endpoint_state(lines) -> str:
     """One-word endpoint state for the model pill, taken from the
     ENDPOINT status line the payload already carries: 'configured'
@@ -218,6 +236,11 @@ def build_state_payload(app, stats=None) -> dict:
             "name": str(settings.get("model") or ""),
             "endpoint": str(settings.get("api_base_url") or ""),
             "endpointState": _endpoint_state(lines),
+            # Probe-backed health (Phase 8a): one of the settings
+            # health states, or None before the app's probe has a
+            # state to report. The page prefers a probe verdict
+            # (reachable / unreachable) over endpointState.
+            "health": _probe_health(app),
             "statusLines": [
                 {"label": line.label, "value": line.value, "state": line.state}
                 for line in lines

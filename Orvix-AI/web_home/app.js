@@ -127,20 +127,37 @@ function setConnectedUI(isConnected) {
 
 // Model pill wording from the payload's endpoint state, which the
 // bridge derives from the same model status lines shown in the
-// checks list: configuration is what is known — the endpoint is
-// never probed by the home page, so the pill never claims the model
-// itself is connected or reachable.
+// checks list. The home page itself never probes the endpoint. Since
+// Phase 8a the desktop app probes it periodically and the payload
+// carries the probe-backed verdict as model.health: a real verdict
+// (reachable / unreachable) takes precedence over the configuration-
+// derived wording below, because it is live evidence rather than
+// configuration alone. Before any probe verdict exists — health is
+// "checking" / "not_configured" / absent (older payloads) — the
+// configuration-derived behaviour is kept exactly as before.
 const MODEL_PILL_TEXT = {
   "configured": "ENDPOINT CONFIGURED",
   "partial": "PARTIALLY CONFIGURED",
   "not-configured": "NOT CONFIGURED",
   "not-checked": "NOT CHECKED"
 };
+const MODEL_HEALTH_PILL_TEXT = {
+  "reachable": "ENDPOINT REACHABLE",
+  "unreachable": "ENDPOINT UNREACHABLE"
+};
 function updateModelPill(state) {
   const pill = $("#modelConnectedPill");
   if (!pill) return;
   if (!connected) { pill.innerHTML = "<i></i> NOT CONNECTED"; return; }
   const model = (state && state.model) || {};
+  const healthText = MODEL_HEALTH_PILL_TEXT[model.health];
+  if (healthText) {
+    const healthDot = document.createElement("i");
+    const healthLabel = document.createElement("span");
+    healthLabel.textContent = healthText;
+    pill.replaceChildren(healthDot, healthLabel);
+    return;
+  }
   let key = model.endpointState;
   if (!key) {
     // Older payload without endpointState: fall back to the ENDPOINT

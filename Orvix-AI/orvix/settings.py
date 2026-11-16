@@ -84,8 +84,9 @@ DEFAULTS: dict[str, Any] = {
     # switchable in Settings. They decorate the existing in-app
     # SYSTEM messages, never replace them; when no tray icon exists
     # (ORVIX not in background mode) nothing is sent and nothing is
-    # lost. endpoint_health fires at real health-result points only
-    # (the Settings connection test); there is no polling loop.
+    # lost. endpoint_health fires at real health-result points: the
+    # Settings connection test and, since Premium Phase 8a, the
+    # periodic endpoint probe's reachable/unreachable transitions.
     "notify_task_completed": True,
     "notify_task_failed": True,
     "notify_endpoint_health": True,
@@ -371,21 +372,43 @@ def auto_configure_from_api_key(api_key: str, *, timeout: float = 8.0) -> dict[s
         )
     return {"provider": provider, "api_base_url": normalized, "model": chosen}
 
-def test_api_connection(
+def _parse_model_ids(payload: Any) -> list[str]:
+    """Model IDs from an OpenAI-compatible /models payload.
+
+    Only dict records with a string ``id`` count; anything else in
+    the payload is ignored rather than guessed at.
+    """
+    records = payload.get("data", []) if isinstance(payload, dict) else []
+    if not isinstance(records, list):
+        return []
+    return [
+        item["id"] for item in records
+        if isinstance(item, dict) and isinstance(item.get("id"), str)
+    ]
+
+
+def _models_request(
     base_url: str,
-    model: str,
     api_key: str = "",
     *,
     timeout: float = 7.0,
 ) -> dict[str, Any]:
-    """Check the non-generative /models endpoint; never sends a chat prompt or logs the key."""
-    model_name = str(model or "").strip()
-    if not model_name:
-        return {"ok": False, "message": "Enter a model name before testing the connection."}
+    """The one shared GET /models fetch (Premium Phase 8a).
+
+    Every /models consumer — the connection test, the Settings
+    model-list loader and the periodic health probe — goes through
+    here, so the transport validation, headers and short timeouts
+    can never drift apart. Never sends a chat prompt and never logs
+    the key. Returns ``{"ok", "status_code", "model_ids", "message"}``:
+    on success ``ok`` is True and ``model_ids`` is the parsed list
+    (possibly empty); on failure ``model_ids`` is None and ``message``
+    is the honest error text the callers have always shown.
+    """
     try:
         normalized = validate_api_key_transport(base_url, api_key)
     except ValueError as exc:
-        return {"ok": False, "message": str(exc)}
+        return {"ok": False, "status_code": None, "model_ids": None,
+                "message": str(exc)}
     headers = {"Accept": "application/json"}
     if api_key:
         headers["Authorization"] = f"Bearer {api_key}"
@@ -398,31 +421,48 @@ def test_api_connection(
         )
     except Exception as exc:
         return {
-            "ok": False,
+            "ok": False, "status_code": None, "model_ids": None,
             "message": f"Could not reach the endpoint ({type(exc).__name__}). Check the URL and confirm that the service is running.",
         }
     status = int(getattr(response, "status_code", 0) or 0)
     if status in {401, 403}:
-        return {"ok": False, "status_code": status, "message": f"Endpoint returned HTTP {status}. Check API-key permissions."}
+        return {"ok": False, "status_code": status, "model_ids": None,
+                "message": f"Endpoint returned HTTP {status}. Check API-key permissions."}
     if status != 200:
         return {
-            "ok": False,
-            "status_code": status,
+            "ok": False, "status_code": status, "model_ids": None,
             "message": f"/models returned HTTP {status}. Check the API base URL and provider compatibility. No chat generation request was sent.",
         }
     try:
         payload = response.json()
     except Exception:
         return {
-            "ok": False,
-            "status_code": status,
+            "ok": False, "status_code": status, "model_ids": None,
             "message": "Endpoint responded, but /models did not return valid JSON. Check OpenAI-compatible API support.",
         }
-    records = payload.get("data", []) if isinstance(payload, dict) else []
-    model_ids = [
-        item["id"] for item in records
-        if isinstance(item, dict) and isinstance(item.get("id"), str)
-    ] if isinstance(records, list) else []
+    return {"ok": True, "status_code": status,
+            "model_ids": _parse_model_ids(payload), "message": ""}
+
+
+def test_api_connection(
+    base_url: str,
+    model: str,
+    api_key: str = "",
+    *,
+    timeout: float = 7.0,
+) -> dict[str, Any]:
+    """Check the non-generative /models endpoint; never sends a chat prompt or logs the key."""
+    model_name = str(model or "").strip()
+    if not model_name:
+        return {"ok": False, "message": "Enter a model name before testing the connection."}
+    fetched = _models_request(base_url, api_key, timeout=timeout)
+    if not fetched["ok"]:
+        result: dict[str, Any] = {"ok": False, "message": fetched["message"]}
+        if fetched["status_code"] is not None:
+            result["status_code"] = fetched["status_code"]
+        return result
+    status = fetched["status_code"]
+    model_ids = fetched["model_ids"] or []
     if not model_ids:
         return {
             "ok": True, "model_available": None, "status_code": status,
@@ -438,6 +478,153 @@ def test_api_connection(
         "message": f"Endpoint reachable (HTTP 200), but configured model '{model_name}' was not listed. Verify the model name; no chat generation request was sent.",
     }
 
+
+def fetch_model_list(
+    base_url: str,
+    api_key: str = "",
+    *,
+    timeout: float = 7.0,
+) -> dict[str, Any]:
+    """Fetch the configured endpoint's model list (Premium Phase 8a).
+
+    Powers the Settings "Load models" button. Goes through the same
+    shared :func:`_models_request` fetch as the connection test —
+    same transport validation, headers and timeouts — so a failure
+    reports the same honest error text and never fabricates a list:
+    ``models`` is empty unless the endpoint really returned IDs.
+    """
+    fetched = _models_request(base_url, api_key, timeout=timeout)
+    if not fetched["ok"]:
+        result: dict[str, Any] = {
+            "ok": False, "models": [], "message": fetched["message"]}
+        if fetched["status_code"] is not None:
+            result["status_code"] = fetched["status_code"]
+        return result
+    models = list(fetched["model_ids"] or [])
+    return {
+        "ok": True, "models": models, "status_code": fetched["status_code"],
+        "message": f"Endpoint listed {len(models)} model(s).",
+    }
+
+
+# ---------------------------------------------------------------------------
+# Live endpoint health (Premium Phase 8a)
+#
+# The desktop app probes the configured endpoint's /models route on a
+# bounded interval and reports one of exactly four states. The state
+# machine below is pure — no threads, no network — so it is unit-
+# testable on its own; app.py owns the daemon thread that feeds real
+# probe results into it. "reachable" is only ever produced by a real
+# successful probe, never assumed from configuration alone.
+# ---------------------------------------------------------------------------
+
+HEALTH_NOT_CONFIGURED = "not_configured"
+HEALTH_CHECKING = "checking"
+HEALTH_REACHABLE = "reachable"
+HEALTH_UNREACHABLE = "unreachable"
+
+ENDPOINT_HEALTH_STATES: tuple[str, ...] = (
+    HEALTH_NOT_CONFIGURED,
+    HEALTH_CHECKING,
+    HEALTH_REACHABLE,
+    HEALTH_UNREACHABLE,
+)
+
+#: Seconds between health probes while the app runs. Bounded so an
+#: unreachable endpoint is retried gently, never hammered.
+ENDPOINT_HEALTH_INTERVAL_SECONDS = 30.0
+
+
+def endpoint_is_configured(base_url: str, model: str) -> bool:
+    """Whether an endpoint counts as configured for probing.
+
+    The same notion the connection test applies: a base URL and a
+    model name are both present. Anything less is not probed at all.
+    """
+    return bool(str(base_url or "").strip()) and bool(str(model or "").strip())
+
+
+def initial_endpoint_health(configured: bool) -> str:
+    """The health state before any probe has run.
+
+    Configured endpoints start at ``checking`` (a probe is owed, not
+    yet answered); unconfigured ones at ``not_configured``. Neither
+    claims reachability.
+    """
+    return HEALTH_CHECKING if configured else HEALTH_NOT_CONFIGURED
+
+
+def endpoint_health_should_notify(previous: str, new: str) -> bool:
+    """Whether a health change deserves an endpoint_health toast.
+
+    Only a flip between the two probe-backed verdicts counts —
+    reachable -> unreachable or unreachable -> reachable. The first
+    probe's verdict (from checking / not_configured) and repeated
+    polls that keep the same verdict never notify.
+    """
+    verdicts = (HEALTH_REACHABLE, HEALTH_UNREACHABLE)
+    return previous in verdicts and new in verdicts and previous != new
+
+
+def advance_endpoint_health(
+    current: str | None,
+    *,
+    configured: bool,
+    probe_ok: bool | None = None,
+) -> tuple[str, bool]:
+    """Pure transition: (new state, should_notify) for one probe tick.
+
+    ``probe_ok`` is the latest probe's outcome, or None when no probe
+    ran this tick (unconfigured, or still awaiting the first probe).
+    An unrecognised ``current`` is treated as "no state yet". Losing
+    the configuration always lands on ``not_configured`` without a
+    notification; gaining one lands on ``checking`` until a probe
+    answers.
+    """
+    previous = current if current in ENDPOINT_HEALTH_STATES else None
+    if not configured:
+        new = HEALTH_NOT_CONFIGURED
+    elif probe_ok is None:
+        if previous in (HEALTH_REACHABLE, HEALTH_UNREACHABLE, HEALTH_CHECKING):
+            new = previous
+        else:
+            new = HEALTH_CHECKING
+    else:
+        new = HEALTH_REACHABLE if probe_ok else HEALTH_UNREACHABLE
+    notify = (
+        previous is not None
+        and endpoint_health_should_notify(previous, new)
+    )
+    return new, notify
+
+
+def probe_endpoint_health(
+    base_url: str,
+    model: str,
+    api_key: str = "",
+    *,
+    timeout: float = 7.0,
+) -> dict[str, Any]:
+    """One health probe: the shared /models GET, nothing more.
+
+    Unconfigured endpoints are never probed — the result says so and
+    no network call is made. Otherwise ``ok`` is exactly the shared
+    fetch's verdict (HTTP 200 with a valid /models JSON body), and
+    ``message`` carries its honest text for the notification detail.
+    """
+    if not endpoint_is_configured(base_url, model):
+        return {
+            "ok": False, "configured": False,
+            "message": "AI endpoint is not configured; health probe skipped.",
+        }
+    fetched = fetch_model_list(base_url, api_key, timeout=timeout)
+    result: dict[str, Any] = {
+        "ok": bool(fetched["ok"]), "configured": True,
+        "message": fetched["message"],
+    }
+    if fetched.get("status_code") is not None:
+        result["status_code"] = fetched["status_code"]
+    return result
 
 
 _SETTINGS_LOCK = threading.RLock()
