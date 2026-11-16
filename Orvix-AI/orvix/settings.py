@@ -3,6 +3,7 @@ from __future__ import annotations
 import ipaddress
 import json
 import os
+import re
 import shutil
 import threading
 import uuid
@@ -69,6 +70,15 @@ DEFAULTS: dict[str, Any] = {
     # playback by speaking. Both default on; both fail safe.
     "voice_vad_enabled": True,
     "voice_barge_in": True,
+    # Speech rate / volume for the neural (edge-tts) voice, in the
+    # exact signed-percent string format edge-tts accepts. The
+    # defaults reproduce the previously hard-coded "+0%" / "+0%".
+    "speech_rate": "+0%",
+    "speech_volume": "+0%",
+    # Wake phrase: the full phrase the wake-word listener matches and
+    # both UIs display, so the label and the matcher can never drift
+    # apart again. Validated by validate_wake_phrase.
+    "wake_phrase": "hey orvix",
 }
 
 
@@ -125,6 +135,58 @@ def validate_api_key_transport(base_url: str, api_key: str = "") -> str:
         raise ValueError("API keys are blocked over plain HTTP to non-local endpoints. Use HTTPS or a local endpoint.")
     return normalized
 
+
+
+_SIGNED_PERCENT_RE = re.compile(r"^([+-])(\d{1,3})%$")
+
+
+def _validate_signed_percent(value: str, minimum: int, maximum: int, label: str) -> str:
+    """Validate an edge-tts signed-percent string and normalise it.
+
+    edge-tts takes rate/volume as a sign, digits and a percent sign
+    (for example ``"+0%"`` or ``"-25%"``). Anything else — a bare
+    number, a decimal, a missing sign — is rejected so a malformed
+    value can never reach ``edge_tts.Communicate``.
+    """
+    text = str(value or "").strip()
+    match = _SIGNED_PERCENT_RE.match(text)
+    if match is None:
+        raise ValueError(f"{label} must look like '+0%' (a + or - sign, a whole number and %).")
+    amount = int(match.group(2)) * (1 if match.group(1) == "+" else -1)
+    if not minimum <= amount <= maximum:
+        raise ValueError(f"{label} must be between {minimum:+d}% and {maximum:+d}%.")
+    return f"{amount:+d}%"
+
+
+def validate_speech_rate(value: str) -> str:
+    """Speech rate for edge-tts: -50% .. +100%, defaulting format '+0%'."""
+    return _validate_signed_percent(value, -50, 100, "Speech rate")
+
+
+def validate_speech_volume(value: str) -> str:
+    """Speech volume for edge-tts: -100% .. +100%, defaulting format '+0%'."""
+    return _validate_signed_percent(value, -100, 100, "Speech volume")
+
+
+WAKE_PHRASE_MAX_LENGTH = 40
+
+
+def validate_wake_phrase(value: str) -> str:
+    """Validate the configurable wake phrase and normalise its spacing.
+
+    The phrase is what the wake-word listener matches and what both
+    UIs display. It must be non-empty once stripped, at most
+    ``WAKE_PHRASE_MAX_LENGTH`` characters, and contain only letters,
+    spaces and apostrophes.
+    """
+    text = " ".join(str(value or "").split())
+    if not text:
+        raise ValueError("Wake phrase cannot be empty.")
+    if len(text) > WAKE_PHRASE_MAX_LENGTH:
+        raise ValueError(f"Wake phrase must be at most {WAKE_PHRASE_MAX_LENGTH} characters.")
+    if any(not (char.isalpha() or char in " '") for char in text):
+        raise ValueError("Wake phrase may contain only letters, spaces and apostrophes.")
+    return text
 
 
 def auto_configure_from_api_key(api_key: str, *, timeout: float = 8.0) -> dict[str, str]:

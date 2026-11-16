@@ -44,6 +44,7 @@ breaks the voice loop.
 from __future__ import annotations
 
 import asyncio
+import re
 import tempfile
 import threading
 import time
@@ -51,6 +52,7 @@ from pathlib import Path
 
 from .audio_levels import LevelMeter, PlaybackEnvelope, level_from_rms, pcm_rms
 from .barge_in import BargeInController
+from .settings import validate_speech_rate, validate_speech_volume, validate_wake_phrase
 from .vad import VadSegmenter
 
 _CAPTURE_CHUNK = 1024
@@ -58,6 +60,82 @@ _CAPTURE_CHUNK = 1024
 # timeout to start speaking; the segmenter caps an utterance at 12 s,
 # mirroring the legacy phrase_time_limit.
 _VAD_WAIT_SECONDS = 5.5
+
+
+def _edge_rate(value) -> str:
+    """Configured speech rate for edge-tts; '+0%' if the value is invalid."""
+    try:
+        return validate_speech_rate(value)
+    except ValueError:
+        return "+0%"
+
+
+def _edge_volume(value) -> str:
+    """Configured speech volume for edge-tts; '+0%' if the value is invalid."""
+    try:
+        return validate_speech_volume(value)
+    except ValueError:
+        return "+0%"
+
+
+# -- wake phrase matching ----------------------------------------------
+#
+# The wake-word listener matches the *configured* phrase (Settings key
+# ``wake_phrase``, default "hey orvix") — the same phrase both UIs
+# display — instead of the bare assistant name. An utterance triggers
+# only when the full phrase appears in it; the routed command is the
+# text after the phrase (empty when nothing follows, which simply
+# activates listening, exactly as before).
+
+#: Fallback phrase when the configured value fails validation, so a
+#: hand-edited settings file can never silently disable wake-word mode.
+_DEFAULT_WAKE_PHRASE = "hey orvix"
+
+#: Bengali-script renderings of name tokens that may appear in a wake
+#: phrase. Speech recognition in bn-BD can return the assistant's name
+#: in Bengali script, so the matcher also tests the phrase with its
+#: name token swapped for the Bengali-script form.
+_BENGALI_NAME_FORMS = {"orvix": "অরভিক্স"}
+
+_WAKE_TRAILING_CHARS = " ,.!?—-:"
+
+
+def _wake_pattern(tokens) -> re.Pattern:
+    body = r"[\s,]+".join(re.escape(token) for token in tokens)
+    return re.compile(r"(?<!\w)" + body + r"(?!\w)", flags=re.IGNORECASE)
+
+
+def match_wake_phrase(heard, phrase) -> str | None:
+    """Return the command after the wake phrase, or None if not heard.
+
+    ``heard`` is recognised text; ``phrase`` is the configured wake
+    phrase. Matching normalises both sides (the phrase is validated,
+    which collapses its whitespace; the search is case-insensitive and
+    tolerates extra spacing or a comma between the phrase's words).
+    The returned command preserves the recognised text's own casing,
+    stripped of the separator punctuation that followed the phrase.
+    An empty string means the phrase was heard with no command after
+    it. An invalid configured phrase falls back to the default phrase.
+    """
+    text = str(heard or "")
+    if not text.strip():
+        return None
+    try:
+        normalised = validate_wake_phrase(phrase)
+    except ValueError:
+        normalised = validate_wake_phrase(_DEFAULT_WAKE_PHRASE)
+    tokens = normalised.lower().split()
+    if not tokens:
+        return None
+    candidates = [tokens]
+    if any(token in _BENGALI_NAME_FORMS for token in tokens):
+        candidates.append(
+            [_BENGALI_NAME_FORMS.get(token, token) for token in tokens])
+    for candidate in candidates:
+        match = _wake_pattern(candidate).search(text)
+        if match:
+            return text[match.end():].strip(_WAKE_TRAILING_CHARS)
+    return None
 
 
 def _playback_timeout_seconds(text_length: int) -> float:
@@ -285,18 +363,21 @@ class SpeechEngine:
 
     # -- speaking ------------------------------------------------------
 
-    def speak(self, text: str, voice: str = "bn-BD-PradeepNeural", *, barge_in: bool = False) -> None:
+    def speak(self, text: str, voice: str = "bn-BD-PradeepNeural", *, barge_in: bool = False,
+              rate: str = "+0%", volume: str = "+0%") -> None:
         if not text.strip():
             return
         with self._lock:
             try:
-                asyncio.run(self._edge_speak(text[:3000], voice, barge_in=barge_in))
+                asyncio.run(self._edge_speak(
+                    text[:3000], voice, barge_in=barge_in, rate=rate, volume=volume))
                 return
             except Exception:
                 pass
             self._speak_fallback(text[:1000])
 
-    async def _edge_speak(self, text: str, voice: str, *, barge_in: bool = False) -> None:
+    async def _edge_speak(self, text: str, voice: str, *, barge_in: bool = False,
+                          rate: str = "+0%", volume: str = "+0%") -> None:
         import edge_tts
         import pygame
         with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as f:
@@ -305,7 +386,9 @@ class SpeechEngine:
         monitor_stop: threading.Event | None = None
         monitor_thread: threading.Thread | None = None
         try:
-            communicate = edge_tts.Communicate(text=text, voice=voice, rate="+0%", volume="+0%")
+            communicate = edge_tts.Communicate(
+                text=text, voice=voice,
+                rate=_edge_rate(rate), volume=_edge_volume(volume))
             await asyncio.wait_for(communicate.save(str(out)), timeout=45.0)
             if not self._pygame_ready:
                 pygame.mixer.init()

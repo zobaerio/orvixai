@@ -48,3 +48,9 @@
 .task-times{flex:0 0 auto;font-size:10px;color:#7295b4;font-weight:700;text-align:right}
 .tasks-empty{font-size:12px;color:var(--muted);margin:16px 0 6px}
 @media(max-width:760px){.task-row{flex-wrap:wrap}.task-times{text-align:left}}
+
+/* Stop Speaking — in the voice panel under the wake row; routes via
+   the bridge to SpeechEngine.stop_speaking() (see app.js). */
+.stop-row{padding:8px 18px 0}
+.stop-speaking-button{background:#3a1220;border:1px solid #b5443c;color:#ff9d94;border-radius:20px;padding:5px 14px;font-weight:800;font-size:10px}
+.stop-speaking-button:hover{background:#4a1828}
