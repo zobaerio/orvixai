@@ -242,6 +242,10 @@ def build_state_payload(app, stats=None) -> dict:
         # The configured wake phrase, so the page's wake pill displays
         # the exact phrase the wake-word matcher listens for.
         "wakePhrase": str(settings.get("wake_phrase") or "hey orvix"),
+        # Appearance (Settings > Appearance): whether the page's CSS
+        # animations/transitions run. Defaults to True (the previous
+        # always-animated behaviour) when the key is absent.
+        "webHomeAnimations": bool(settings.get("web_home_animations", True)),
         "busy": bool(getattr(app, "_busy", False)),
     }
 

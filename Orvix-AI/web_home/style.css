@@ -74,3 +74,8 @@
 .typing-indicator span:nth-child(2){animation-delay:.2s}
 .typing-indicator span:nth-child(3){animation-delay:.4s}
 @keyframes typingBlink{to{opacity:.25;transform:scale(.7)}}
+
+/* Web-home animations toggle (Phase 7, Settings > Appearance): when
+   the payload reports webHomeAnimations off, app.js adds this class
+   and every CSS animation/transition on the page is disabled. */
+body.no-animations *,body.no-animations *::before,body.no-animations *::after{animation:none!important;transition:none!important}
