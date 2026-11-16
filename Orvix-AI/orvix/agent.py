@@ -212,6 +212,355 @@ def _post_with_bounded_retry(
 
     return None
 
+# --- Streaming responses (Premium Phase 8b) --------------------------------
+#
+# The desktop agent first tries an OpenAI-compatible streaming request
+# (``stream=True``, SSE ``data:`` lines). Design notes:
+#
+# * The streaming attempt itself is a SINGLE request. Retrying a stream
+#   could duplicate deltas the user has already seen, so the bounded
+#   retry policy is not applied to it directly: any failure that
+#   happens BEFORE the first parsed delta (HTTP error, connection
+#   failure, or a body that yields no SSE chunks at all) falls back
+#   ONCE to the existing single-shot path, and that path keeps its
+#   bounded-retry behaviour exactly as before.
+# * A failure AFTER deltas were delivered never restarts the request:
+#   the partial text is finalised honestly as an interrupted response.
+# * Only plain assistant ``content`` deltas are forwarded to the
+#   ``on_delta`` callback (as the cumulative text so far). Tool-call
+#   deltas are accumulated silently — argument fragments are never
+#   forwarded — and the assembled tool calls are handed to the exact
+#   same tool-execution flow as the single-shot path. If a tool-call
+#   delta has been seen in a turn, later content deltas of that same
+#   turn are no longer forwarded (that turn is a tool turn, not the
+#   final answer).
+_STREAM_DONE = "[DONE]"
+_STREAM_INTERRUPTED_NOTE = "\n\n[Response interrupted — the text above is incomplete.]"
+_STREAM_CANCELLED_NOTE = "\n\nকাজটি বাতিল করা হয়েছে।"
+
+
+def _is_sse_response(response: Any) -> bool:
+    """True when the response declares an event-stream content type."""
+    headers = getattr(response, "headers", None)
+    content_type = ""
+    if headers is not None:
+        try:
+            content_type = str(headers.get("Content-Type", "") or "")
+        except Exception:
+            content_type = ""
+    return "text/event-stream" in content_type.casefold()
+
+
+def _extract_provider_message(payload: Any) -> tuple[dict[str, Any] | None, str | None, bool]:
+    """Extract the assistant message from a single-shot payload.
+
+    Returns ``(message, error, empty_choices)``: exactly one of the
+    three is meaningful. Error strings match the messages the
+    single-shot path has always produced.
+    """
+    if not isinstance(payload, dict):
+        return None, _invalid_provider_response(), False
+    choices = payload.get("choices")
+    if not isinstance(choices, list):
+        return None, _invalid_provider_response(
+            "AI provider response is missing a valid choices list."), False
+    if not choices:
+        return None, None, True
+    choice = choices[0]
+    if not isinstance(choice, dict):
+        return None, _invalid_provider_response(
+            "AI provider returned a malformed choice object."), False
+    message = choice.get("message")
+    if not isinstance(message, dict):
+        return None, _invalid_provider_response(
+            "AI provider response is missing a valid message object."), False
+    return message, None, False
+
+
+def _assemble_stream_tool_calls(
+    fragments: dict[int, dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Assemble per-index tool-call fragments into whole tool calls."""
+    assembled: list[dict[str, Any]] = []
+    for index in sorted(fragments):
+        fragment = fragments[index]
+        function = fragment.get("function") or {}
+        assembled.append({
+            "id": fragment.get("id", ""),
+            "type": fragment.get("type", "function"),
+            "function": {
+                "name": function.get("name", ""),
+                "arguments": function.get("arguments", ""),
+            },
+        })
+    return assembled
+
+
+def _consume_sse_stream(
+    response: Any,
+    *,
+    cancel_event: threading.Event | None = None,
+    on_delta: Callable[[str], None] | None = None,
+) -> dict[str, Any]:
+    """Consume one SSE streaming response.
+
+    Returns a dict with ``kind`` one of ``"complete"`` (assembled
+    ``message`` included), ``"cancelled"``, ``"interrupted"`` (failed
+    after at least one parsed chunk), or ``"no_data"`` (nothing usable
+    arrived, so the caller may fall back to the single-shot path).
+    ``content`` carries the accumulated plain content and ``delivered``
+    whether any of it was forwarded to ``on_delta``.
+    """
+    content_parts: list[str] = []
+    tool_fragments: dict[int, dict[str, Any]] = {}
+    delivered = False
+    saw_tool_call = False
+    saw_chunk = False
+    saw_done = False
+
+    def outcome(kind: str) -> dict[str, Any]:
+        return {
+            "kind": kind,
+            "content": "".join(content_parts),
+            "delivered": delivered,
+            "tool_calls": _assemble_stream_tool_calls(tool_fragments),
+        }
+
+    def cancelled() -> bool:
+        return cancel_event is not None and cancel_event.is_set()
+
+    try:
+        try:
+            lines = response.iter_lines(decode_unicode=True)
+        except TypeError:
+            lines = response.iter_lines()
+        for raw_line in lines:
+            if cancelled():
+                return outcome("cancelled")
+            if isinstance(raw_line, bytes):
+                line = raw_line.decode("utf-8", errors="replace").strip()
+            elif isinstance(raw_line, str):
+                line = raw_line.strip()
+            else:
+                continue
+            if not line or line.startswith(":"):
+                continue
+            if not line.startswith("data:"):
+                # event:/id:/retry: fields and any other malformed or
+                # non-SSE line are skipped safely.
+                continue
+            data = line[len("data:"):].strip()
+            if data == _STREAM_DONE:
+                saw_done = True
+                break
+            try:
+                chunk = json.loads(data)
+            except (ValueError, TypeError):
+                continue
+            if not isinstance(chunk, dict):
+                continue
+            choices = chunk.get("choices")
+            if not isinstance(choices, list) or not choices:
+                continue
+            choice = choices[0]
+            if not isinstance(choice, dict):
+                continue
+            delta = choice.get("delta")
+            if not isinstance(delta, dict):
+                delta = choice.get("message")
+            if not isinstance(delta, dict):
+                continue
+            saw_chunk = True
+            piece = delta.get("content")
+            if isinstance(piece, str) and piece:
+                content_parts.append(piece)
+                if not saw_tool_call and on_delta is not None:
+                    try:
+                        on_delta("".join(content_parts))
+                        delivered = True
+                    except Exception:
+                        # A broken UI callback must never break the stream.
+                        pass
+            raw_tool_calls = delta.get("tool_calls")
+            if isinstance(raw_tool_calls, list):
+                for raw_call in raw_tool_calls:
+                    if not isinstance(raw_call, dict):
+                        continue
+                    saw_tool_call = True
+                    index = raw_call.get("index")
+                    if type(index) is not int or index < 0:
+                        index = len(tool_fragments)
+                    fragment = tool_fragments.setdefault(
+                        index, {"id": "", "type": "function",
+                                "function": {"name": "", "arguments": ""}})
+                    if isinstance(raw_call.get("id"), str) and raw_call["id"]:
+                        fragment["id"] = raw_call["id"]
+                    if isinstance(raw_call.get("type"), str) and raw_call["type"]:
+                        fragment["type"] = raw_call["type"]
+                    raw_function = raw_call.get("function")
+                    if isinstance(raw_function, dict):
+                        function = fragment["function"]
+                        if isinstance(raw_function.get("name"), str):
+                            function["name"] += raw_function["name"]
+                        if isinstance(raw_function.get("arguments"), str):
+                            function["arguments"] += raw_function["arguments"]
+            if cancelled():
+                return outcome("cancelled")
+    except requests.RequestException:
+        # A transport failure mid-stream: honest interruption when any
+        # chunk already arrived, otherwise the caller may fall back.
+        return outcome("interrupted" if saw_chunk else "no_data")
+    except Exception:
+        return outcome("interrupted" if saw_chunk else "no_data")
+    finally:
+        try:
+            response.close()
+        except Exception:
+            pass
+    if cancelled():
+        return outcome("cancelled")
+    if not saw_chunk and not saw_done:
+        return outcome("no_data")
+    result = outcome("complete")
+    message: dict[str, Any] = {"role": "assistant", "content": "".join(content_parts)}
+    if result["tool_calls"]:
+        message["tool_calls"] = result["tool_calls"]
+    result["message"] = message
+    return result
+
+
+def _parse_sse_text(text: str) -> dict[str, Any] | None:
+    """Best-effort SSE parse of an already-buffered response body.
+
+    Used only when a streaming request returned a non-JSON body whose
+    text nevertheless contains ``data:`` lines (an endpoint that
+    streams without declaring the event-stream content type)."""
+
+    class _BufferedResponse:
+        def __init__(self, lines):
+            self._lines = lines
+
+        def iter_lines(self, decode_unicode=True):
+            return iter(self._lines)
+
+        def close(self):
+            pass
+
+    if not isinstance(text, str) or "data:" not in text:
+        return None
+    result = _consume_sse_stream(_BufferedResponse(text.splitlines()))
+    return result if result.get("kind") == "complete" else None
+
+
+def _fetch_model_message(
+    url: str,
+    *,
+    headers: dict[str, str],
+    payload: dict[str, Any],
+    timeout: tuple[int, int] = (10, 45),
+    cancel_event: threading.Event | None = None,
+    progress: Callable[[str], None] | None = None,
+    on_delta: Callable[[str], None] | None = None,
+) -> dict[str, Any]:
+    """Fetch one model turn, streaming first with a single-shot fallback.
+
+    Returns a dict whose ``kind`` is ``"message"`` (assembled assistant
+    message, from either path), ``"http_error"`` (``status``),
+    ``"invalid"`` (``error`` text), ``"empty"`` (no choices),
+    ``"cancelled"`` (``content``/``delivered``), or ``"interrupted"``
+    (``content``/``delivered``/``tool_calls``). See the Phase 8b design
+    notes above for the fallback and interruption policy.
+    """
+    def cancelled() -> bool:
+        return cancel_event is not None and cancel_event.is_set()
+
+    def single_shot() -> dict[str, Any]:
+        response = _post_with_bounded_retry(
+            url,
+            headers=headers,
+            payload=payload,
+            timeout=timeout,
+            cancel_event=cancel_event,
+            progress=progress,
+        )
+        if response is None:
+            # _post_with_bounded_retry returns None only on cancellation.
+            return {"kind": "cancelled", "content": "", "delivered": False}
+        if cancelled():
+            return {"kind": "cancelled", "content": "", "delivered": False}
+        status_code = int(getattr(response, "status_code", 0) or 0)
+        if status_code >= 400:
+            return {"kind": "http_error", "status": status_code}
+        try:
+            body = response.json()
+        except (ValueError, requests.RequestException):
+            return {"kind": "invalid", "error": _invalid_provider_response(
+                "AI provider returned invalid JSON. Check endpoint compatibility; response content was hidden.")}
+        message, error, empty = _extract_provider_message(body)
+        if error is not None:
+            return {"kind": "invalid", "error": error}
+        if empty:
+            return {"kind": "empty"}
+        return {"kind": "message", "message": message}
+
+    if cancelled():
+        return {"kind": "cancelled", "content": "", "delivered": False}
+
+    # --- streaming attempt (single request, stream=True) ---
+    stream_payload = dict(payload)
+    stream_payload["stream"] = True
+    try:
+        response = requests.post(
+            url, headers=headers, json=stream_payload, timeout=timeout, stream=True)
+    except requests.RequestException:
+        # Immediate transport failure before any delta: fall back once
+        # to the single-shot path, whose bounded retry applies.
+        return single_shot()
+    if cancelled():
+        try:
+            response.close()
+        except Exception:
+            pass
+        return {"kind": "cancelled", "content": "", "delivered": False}
+    status_code = int(getattr(response, "status_code", 0) or 0)
+    if status_code >= 400:
+        # The endpoint rejected the streaming request (or failed)
+        # before any delta: fall back ONCE to the single-shot path.
+        try:
+            response.close()
+        except Exception:
+            pass
+        return single_shot()
+
+    if _is_sse_response(response):
+        result = _consume_sse_stream(
+            response, cancel_event=cancel_event, on_delta=on_delta)
+        if result["kind"] == "complete":
+            return {"kind": "message", "message": result["message"]}
+        if result["kind"] in {"cancelled", "interrupted"}:
+            return result
+        # "no_data": the stream yielded nothing usable before ending —
+        # treat it like a rejected stream and fall back once.
+        return single_shot()
+
+    # --- non-SSE body on the streaming request: handle it as the
+    # single-shot JSON payload instead of crashing or re-requesting.
+    try:
+        body = response.json()
+    except (ValueError, requests.RequestException):
+        recovered = _parse_sse_text(str(getattr(response, "text", "") or ""))
+        if recovered is not None:
+            return {"kind": "message", "message": recovered["message"]}
+        return {"kind": "invalid", "error": _invalid_provider_response(
+            "AI provider returned invalid JSON. Check endpoint compatibility; response content was hidden.")}
+    message, error, empty = _extract_provider_message(body)
+    if error is not None:
+        return {"kind": "invalid", "error": error}
+    if empty:
+        return {"kind": "empty"}
+    return {"kind": "message", "message": message}
+
+
 def _safe_provider_http_error(status_code: int) -> str:
     """Return actionable HTTP diagnostics without reflecting provider-controlled response bodies."""
     messages = {
@@ -301,12 +650,19 @@ class OrvixAgent:
         progress: Callable[[str], None] | None = None,
         tool_event: Callable[[str, str, str | None, str], str | None] | None = None,
         tool_budget: int = MAX_TOOL_CALLS_PER_TASK,
+        on_delta: Callable[[str], None] | None = None,
     ) -> str:
         """Answer a user request; cancellation is cooperative between blocking operations.
 
         tool_budget caps tool actions for this response, allowing a caller to enforce one
         aggregate budget across a multi-step task. Completion evidence is bounded metadata;
         tool arguments and results are never copied into these fields.
+
+        on_delta, when supplied, receives the cumulative plain assistant
+        text of the current model turn as streaming deltas arrive (see
+        the Phase 8b notes at ``_fetch_model_message``). Tool-call
+        payloads are never passed to it. The return value is always the
+        final assembled answer, identical to the single-shot result.
         """
         self.last_outcome = "completed"
         self.last_tool_call_count = 0
@@ -399,43 +755,55 @@ class OrvixAgent:
                 if cancelled():
                     return cancelled_response("কাজটি বাতিল করা হয়েছে। আর কোনো tool action চালানো হবে না।")
                 report(f"Contacting AI model (turn {turn + 1}/{max_rounds})")
-                response = _post_with_bounded_retry(
+                # Streaming first (Phase 8b): _fetch_model_message tries
+                # an SSE streaming request and falls back ONCE to the
+                # bounded-retry single-shot path when the stream is
+                # rejected or fails before any delta. The assembled
+                # message then flows through the exact same validation
+                # and tool execution as a single-shot response.
+                turn_result = _fetch_model_message(
                     url,
                     headers=headers,
                     payload={"model": model, "messages": messages, "tools": TOOLS, "tool_choice": "auto", "temperature": 0.4},
                     timeout=(10, 45),
                     cancel_event=cancel_event,
                     progress=report,
+                    on_delta=on_delta,
                 )
-                if response is None and cancelled():
-                    return cancelled_response("কাজ বাতিলের অনুরোধ গৃহীত হয়েছে। নতুন কোনো tool action চালানো হয়নি।")
+                if turn_result["kind"] == "cancelled":
+                    partial = str(turn_result.get("content") or "")
+                    if partial and turn_result.get("delivered"):
+                        # Keep the streamed partial and mark it cancelled,
+                        # the streamed counterpart of the cancelled
+                        # single-shot replies below.
+                        return cancelled_response(partial + _STREAM_CANCELLED_NOTE)
+                    return cancelled_response("কাজ বাতিলের অনুরোধ গৃহীত হয়েছে। বর্তমান AI request শেষ হওয়ার পরে কোনো নতুন tool action চালানো হয়নি।")
+                if turn_result["kind"] == "interrupted":
+                    partial = str(turn_result.get("content") or "")
+                    if partial:
+                        # Mid-stream failure AFTER deltas: never restart
+                        # (that would duplicate text) and never fabricate
+                        # the remainder — finalise the partial honestly.
+                        self.last_outcome = "partial"
+                        answer = partial + _STREAM_INTERRUPTED_NOTE
+                        self.history.append({"role": "assistant", "content": answer})
+                        return answer
+                    self.last_outcome = "failed"
+                    return _invalid_provider_response(
+                        "AI provider stream was interrupted before the response completed. No tool action was started from the incomplete response.")
+                if turn_result["kind"] == "http_error":
+                    self.last_outcome = "failed"
+                    return _safe_provider_http_error(int(turn_result["status"]))
+                if turn_result["kind"] == "invalid":
+                    return invalid_response(str(turn_result["error"]))
+                if turn_result["kind"] == "empty":
+                    self.last_outcome = "failed"
+                    return "AI provider কোনো উত্তর দেয়নি। Model/endpoint Settings-এ যাচাই করো।"
+                message = turn_result["message"]
                 # requests cannot interrupt an already-blocked network read; after it
                 # returns, cancellation is checked before any model-requested tool runs.
                 if cancelled():
                     return cancelled_response("কাজ বাতিলের অনুরোধ গৃহীত হয়েছে। বর্তমান AI request শেষ হওয়ার পরে কোনো নতুন tool action চালানো হয়নি।")
-                if response.status_code >= 400:
-                    self.last_outcome = "failed"
-                    return _safe_provider_http_error(int(response.status_code))
-                try:
-                    payload = response.json()
-                except (ValueError, requests.RequestException):
-                    return invalid_response(
-                        "AI provider returned invalid JSON. Check endpoint compatibility; response content was hidden."
-                    )
-                if not isinstance(payload, dict):
-                    return invalid_response()
-                choices = payload.get("choices")
-                if not isinstance(choices, list):
-                    return invalid_response("AI provider response is missing a valid choices list.")
-                if not choices:
-                    self.last_outcome = "failed"
-                    return "AI provider কোনো উত্তর দেয়নি। Model/endpoint Settings-এ যাচাই করো।"
-                choice = choices[0]
-                if not isinstance(choice, dict):
-                    return invalid_response("AI provider returned a malformed choice object.")
-                message = choice.get("message")
-                if not isinstance(message, dict):
-                    return invalid_response("AI provider response is missing a valid message object.")
                 tool_calls = message.get("tool_calls") or []
                 if not isinstance(tool_calls, list):
                     return invalid_response("AI provider returned malformed tool-call data.")

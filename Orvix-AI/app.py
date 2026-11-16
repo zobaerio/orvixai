@@ -93,6 +93,12 @@ class OrvixDesktop:
         self._busy = False
         self._chat_line_counts: list[int] = []
         self._last_response_text = ""
+        # Streaming (Phase 8b): the in-flight assistant message being
+        # built delta by delta, if any. _stream_text is the text the
+        # chat widget currently shows for it; completion replaces it
+        # with the final assembled answer.
+        self._stream_active = False
+        self._stream_text = ""
         self.task_store = TaskStore()
         self._startup_recovered_task_count = 0
         self._task_recovery_error: str | None = None
@@ -1876,7 +1882,19 @@ class OrvixDesktop:
             return "● LOCAL AI ENDPOINT"
         return "● AI ENDPOINT SET"
 
+    # Tk Text mark anchoring the body of the in-flight streamed
+    # message (Phase 8b). The streamed message is always the last one
+    # in the widget, so its body runs from this mark to the end.
+    _STREAM_BODY_MARK = "orvix_stream_body"
+
     def _write_message(self, speaker: str, text: str, kind: str) -> None:
+        # A whole-message write supersedes in-place streaming: the
+        # streamed partial stays as written and the final answer will
+        # be delivered as its own message by _finish_response (which
+        # only completes the stream while it is still active).
+        if getattr(self, "_stream_active", False):
+            self._stream_active = False
+            self._stream_text = ""
         self.chat.configure(state="normal")
         tag = "name_user" if kind == "user" else "name_assistant" if kind == "assistant" else "name_system"
         # The speaker line carries the message time (HH:MM, shared
@@ -1898,6 +1916,115 @@ class OrvixDesktop:
                 home.push_message(speaker, text, kind)
             except Exception:
                 pass  # the web home mirror must never break the console
+
+    def _push_stream_to_web_home(self, text: str, final: bool) -> None:
+        home = getattr(self, "_web_home", None)
+        if home is not None:
+            try:
+                home.push_stream_message("ORVIX", text, "assistant", final=final)
+            except Exception:
+                pass  # the web home mirror must never break the console
+
+    def _update_streamed_message(self, text: str) -> None:
+        """Create or update the in-flight streamed assistant message.
+
+        Runs on the Tk thread (scheduled via ``root.after`` from the
+        worker's ``on_delta`` callback, the same channel
+        ``_finish_response`` uses, so deltas and completion stay in
+        order). The first delta creates the message — one speaker
+        header, one timestamp — and later deltas replace only its
+        body, in place. The 200-message bound is applied at creation
+        through ``_trim_chat_history`` (whole oldest messages only;
+        the in-flight message is newest, so it is never the one
+        trimmed or split). Copy Last Response tracks the latest text
+        and ends up holding the final assembled answer.
+        """
+        text = str(text or "")
+        if not text:
+            return
+        try:
+            if getattr(self, "_stream_active", False):
+                try:
+                    current = self.chat.get(self._STREAM_BODY_MARK, "end-1c")
+                except tk.TclError:
+                    current = None
+                if current != getattr(self, "_stream_text", ""):
+                    # Another message was written after the streamed
+                    # body: never delete across it. Detach — the final
+                    # answer is then written as its own message.
+                    self._stream_active = False
+                    self._stream_text = ""
+                    return
+                self.chat.configure(state="normal")
+                self.chat.delete(self._STREAM_BODY_MARK, "end")
+                self.chat.insert("end", text, "body")
+                self.chat.configure(state="disabled")
+                self.chat.see("end")
+                self._stream_text = text
+                self._last_response_text = text
+                counts = getattr(self, "_chat_line_counts", None)
+                if counts:
+                    counts[-1] = text.count("\n") + 3
+                self._push_stream_to_web_home(text, final=False)
+                return
+            # First delta: create the message exactly like
+            # _write_message does (header + timestamp + body).
+            self.chat.configure(state="normal")
+            stamp = format_message_time(datetime.now())
+            self.chat.insert("end", "ORVIX ", "name_assistant")
+            self.chat.insert("end", f"· {stamp}\n", "time")
+            self.chat.mark_set(self._STREAM_BODY_MARK, "end-1c")
+            self.chat.mark_gravity(self._STREAM_BODY_MARK, "left")
+            self.chat.insert("end", text, "body")
+            self._stream_active = True
+            self._stream_text = text
+            self._last_response_text = text
+            self._trim_chat_history(text)
+            self.chat.configure(state="disabled")
+            self.chat.see("end")
+            self._push_stream_to_web_home(text, final=False)
+        except tk.TclError:
+            pass
+
+    def _complete_streamed_message(self, final_text: str) -> bool:
+        """Finalise the in-flight streamed message with the full text.
+
+        Returns True when the streamed message was completed in place
+        (its body replaced by the final assembled text, identical to
+        what the single-shot path would have written); False when
+        there is no intact in-flight message, in which case the
+        caller falls back to ``_write_message``.
+        """
+        if not getattr(self, "_stream_active", False):
+            return False
+        final_text = str(final_text or "")
+        try:
+            try:
+                current = self.chat.get(self._STREAM_BODY_MARK, "end-1c")
+            except tk.TclError:
+                current = None
+            if current != getattr(self, "_stream_text", ""):
+                self._stream_active = False
+                self._stream_text = ""
+                return False
+            self.chat.configure(state="normal")
+            self.chat.delete(self._STREAM_BODY_MARK, "end")
+            self.chat.insert("end", f"{final_text}\n", "body")
+            self.chat.insert("end", "\n", "body")
+            self.chat.configure(state="disabled")
+            self.chat.see("end")
+        except tk.TclError:
+            self._stream_active = False
+            self._stream_text = ""
+            return False
+        counts = getattr(self, "_chat_line_counts", None)
+        if counts:
+            counts[-1] = final_text.count("\n") + 3
+        self._last_response_text = final_text
+        self._stream_active = False
+        self._stream_text = ""
+        self._push_stream_to_web_home(final_text, final=True)
+        return True
 
     def _trim_chat_history(self, text: str) -> None:
         """Bound the conversation view to MAX_CHAT_MESSAGES messages.
@@ -1992,6 +2119,8 @@ class OrvixDesktop:
                 pass
         self._chat_line_counts = []
         self._last_response_text = ""
+        self._stream_active = False
+        self._stream_text = ""
         home = getattr(self, "_web_home", None)
         if home is not None:
             try:
@@ -2997,6 +3126,13 @@ class OrvixDesktop:
                         tool_event=lambda name, event_status, action_id, note: self._record_tool_action(
                             task_id, name, event_status, action_id, note
                         ),
+                        # Streaming (Phase 8b): deltas are scheduled on
+                        # the Tk thread through root.after — the same
+                        # channel _finish_response uses — so the
+                        # in-flight message updates stay in order with
+                        # its completion.
+                        on_delta=lambda streamed_text: self.root.after(
+                            0, self._update_streamed_message, streamed_text),
                     )
             except Exception as exc:
                 failed = True
@@ -3024,7 +3160,12 @@ class OrvixDesktop:
             pass
 
     def _finish_response(self, result: str, task_id: str | None = None, task_status: str = "completed") -> None:
-        self._write_message("ORVIX", result, "assistant")
+        # Streaming (Phase 8b): when an in-flight streamed message is
+        # intact, complete it in place with the final assembled text;
+        # otherwise write the result as a whole message, exactly as
+        # before streaming existed.
+        if not self._complete_streamed_message(result):
+            self._write_message("ORVIX", result, "assistant")
         self._push_activity(f"{task_status.upper()}: " + (self._active_task_command or result).splitlines()[0])
         # Native notification at the same finalised outcome that sets
         # the COMPLETED / ERROR core states below (partial counts as
