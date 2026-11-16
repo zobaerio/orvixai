@@ -675,6 +675,145 @@ class StaticWebHomeTests(unittest.TestCase):
         self.assertNotIn('aria-label="YouTube"', self.index_html)
         self.assertNotIn('aria-label="Telegram"', self.index_html)
 
+    def test_voice_nav_entry_focuses_voice_panel(self):
+        # Phase 11: Voice joins the nav as a real entry — it shows the
+        # home view and scrolls/flashes the Voice Control panel (the
+        # panel's own controls keep their existing wiring); it must
+        # not be a dead link or a fake separate page.
+        self.assertIn('data-tab="voice"', self.index_html)
+        self.assertIn("focusVoicePanel", self.app_js)
+        self.assertIn("scrollIntoView", self.app_js)
+        self.assertIn("focus-flash", self.app_js)
+        self.assertIn(".focus-flash", self.style_css)
+
+    def test_hero_status_line_reflects_core_state(self):
+        # Phase 11: the hero carries a status line whose label comes
+        # from the payload's core state; the idle label is the exact
+        # READY TO ASSIST wording, applied by the renderer.
+        self.assertIn('id="coreStatusLabel"', self.index_html)
+        self.assertIn("updateCoreStatus", self.app_js)
+        self.assertIn("updateCoreStatus(state)", self.app_js)
+        self.assertIn("READY TO ASSIST", self.app_js)
+        self.assertIn("TASK COMPLETED", self.app_js)
+        self.assertIn(".hero-status", self.style_css)
+
+    def test_glassmorphism_and_ambient_fx_hooks(self):
+        # Phase 11: true glassmorphism (backdrop blur over translucent
+        # panels) and the ambient FX layers (background canvas, hero
+        # reactor particle canvas, sweep/tick/orbit reactor layers).
+        self.assertIn("backdrop-filter", self.style_css)
+        self.assertIn('id="bgCanvas"', self.index_html)
+        self.assertIn('id="reactorParticles"', self.index_html)
+        self.assertIn("reactorParticles", self.app_js)
+        self.assertIn("reactor ticks", self.index_html)
+        self.assertIn("reactor sweep", self.index_html)
+        self.assertIn(".ticks", self.style_css)
+        self.assertIn(".sweep", self.style_css)
+        self.assertIn(".orbit", self.style_css)
+
+    def test_character_portraits_come_from_bridge(self):
+        # Phase 11: the page requests the real portraits from the
+        # bridge once after connecting; no external image URL and no
+        # mockup artwork is referenced anywhere in the page files.
+        self.assertIn("getCharacterPortraits", self.app_js)
+        self.assertIn("requestPortraits", self.app_js)
+        self.assertIn(".character-photo", self.style_css)
+        self.assertNotIn("<img", self.index_html)
+
+    def test_performance_strip_is_dual_series_equalizer(self):
+        # Phase 11: the Live Performance columns carry BOTH real
+        # series — CPU in front, RAM behind — from the pushed state.
+        self.assertIn("perfRamData", self.app_js)
+        self.assertIn("cpu-bar", self.app_js)
+        self.assertIn("ram-bar", self.app_js)
+        self.assertIn(".cpu-bar", self.style_css)
+        self.assertIn(".ram-bar", self.style_css)
+
+    def test_responsive_breakpoints_rearrange_layout(self):
+        # Phase 11 (§9): dedicated breakpoints rearrange the rails —
+        # right rail drops below at 1250px, single-column stack at
+        # 900px — instead of merely shrinking the desktop grid.
+        self.assertIn("@media(max-width:1250px)", self.style_css)
+        self.assertIn("@media(max-width:900px)", self.style_css)
+
+
+class CharacterPortraitTests(unittest.TestCase):
+    """Phase 11: the bridge resolves the owner's real reference
+    portraits (same roots the desktop app scans) and hands them to
+    the page as data URIs; missing files are omitted, never faked."""
+
+    def _write(self, path, data=b"\xff\xd8\xff\xe0fake-jpeg-bytes"):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(data)
+        return data
+
+    def test_portraits_found_in_primary_root(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp) / "Orvix-AI"
+            data = self._write(
+                base / "assets" / "characters" / "reference" / "luna.jpg")
+            result = webview_home.character_portrait_data_uris(
+                {"luna": {"name": "LUNA", "image": "luna.jpg"},
+                 "ruby": {"name": "RUBY", "image": "ruby.jpg"}},
+                base_dir=base)
+            # Only the character whose file exists is present, and the
+            # data URI round-trips to the exact file bytes.
+            self.assertEqual(list(result), ["luna"])
+            prefix, _, encoded = result["luna"].partition(",")
+            self.assertEqual(prefix, "data:image/jpeg;base64")
+            import base64 as _b64
+            self.assertEqual(_b64.b64decode(encoded), data)
+
+    def test_portraits_found_in_sibling_root(self):
+        # The JPGs may still live in a sibling app folder (the move
+        # into this folder is a separate owner step): discovery globs
+        # siblings exactly like the desktop app does.
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp) / "Orvix-AI"
+            base.mkdir(parents=True)
+            self._write(
+                Path(tmp) / "Sibling-App" / "assets" / "characters"
+                / "reference" / "maya.jpg")
+            result = webview_home.character_portrait_data_uris(
+                {"maya": {"name": "MAYA", "image": "maya.jpg"}},
+                base_dir=base)
+            self.assertIn("maya", result)
+            self.assertTrue(
+                result["maya"].startswith("data:image/jpeg;base64,"))
+
+    def test_missing_portraits_are_omitted(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp) / "Orvix-AI"
+            base.mkdir(parents=True)
+            result = webview_home.character_portrait_data_uris(
+                {"luna": {"name": "LUNA", "image": "luna.jpg"}},
+                base_dir=base)
+            self.assertEqual(result, {})
+
+    def test_api_returns_portraits_and_caches(self):
+        app = FakeApp()
+        api = OrvixWebHomeApi(app)
+        fixed = {"luna": "data:image/jpeg;base64,AAAA"}
+        with mock.patch.object(
+                webview_home, "character_portrait_data_uris",
+                return_value=fixed) as lookup:
+            first = api.getCharacterPortraits()
+            second = api.getCharacterPortraits()
+        self.assertEqual(first, {"ok": True, "portraits": fixed})
+        self.assertEqual(second, first)
+        self.assertEqual(lookup.call_count, 1)
+
+    def test_api_portraits_never_raises_for_minimal_app(self):
+        class MinimalApp:
+            events = queue.Queue()
+        api = OrvixWebHomeApi(MinimalApp())
+        with mock.patch.object(
+                webview_home, "character_portrait_data_uris",
+                side_effect=RuntimeError("boom")):
+            result = api.getCharacterPortraits()
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["error"], "RuntimeError")
+
 
 if __name__ == "__main__":
     unittest.main()

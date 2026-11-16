@@ -116,7 +116,49 @@ function upsertStreamMessage(m) {
 // ---------------------------------------------------------------------------
 let bridgeApi = null; let connected = false; let lastState = null;
 function detectBridge(){ if (window.orvixBridge) return window.orvixBridge; if (window.pywebview && window.pywebview.api) return window.pywebview.api; return null; }
-function tryConnect(){ const api = detectBridge(); if (api && !connected){ bridgeApi = api; connected = true; setConnectedUI(true); } }
+function tryConnect(){ const api = detectBridge(); if (api && !connected){ bridgeApi = api; connected = true; setConnectedUI(true); requestPortraits(); } }
+
+// ---------------------------------------------------------------------------
+// Character portraits (Phase 11): the bridge hands over the owner's real
+// reference images as data URIs (see getCharacterPortraits in the Python
+// bridge) because the WebView cannot be relied on to reach the app's
+// local asset files. Requested once, after the bridge connects. A card
+// whose portrait is absent from the result — or whose image fails to
+// load — keeps its styled initial-letter art; nothing is fetched from
+// the network and no external artwork is ever used.
+// ---------------------------------------------------------------------------
+let portraitsRequested = false;
+function requestPortraits() {
+  if (portraitsRequested || !bridgeApi || typeof bridgeApi.getCharacterPortraits !== "function") return;
+  portraitsRequested = true;
+  try {
+    const result = bridgeApi.getCharacterPortraits();
+    if (result && typeof result.then === "function") {
+      result.then(applyPortraits).catch(() => {});
+    } else {
+      applyPortraits(result);
+    }
+  } catch (_) { /* letter art stays — the honest fallback */ }
+}
+function applyPortraits(result) {
+  const portraits = (result && result.portraits) || {};
+  Object.keys(portraits).forEach((key) => {
+    const uri = portraits[key];
+    if (!uri) return;
+    const card = $$(".character").find((item) => item.dataset.character === String(key).toUpperCase());
+    if (!card) return;
+    const art = card.querySelector(".character-art");
+    if (!art || art.querySelector("img")) return;
+    const img = document.createElement("img");
+    img.className = "character-photo";
+    img.alt = (card.dataset.character || key) + " portrait";
+    // A portrait that fails to decode removes itself, revealing the
+    // letter art underneath instead of a broken-image glyph.
+    img.addEventListener("error", () => img.remove());
+    img.src = uri;
+    art.appendChild(img);
+  });
+}
 window.addEventListener('pywebviewready', tryConnect);
 document.addEventListener('DOMContentLoaded', tryConnect);
 
@@ -205,6 +247,37 @@ function updateModelPill(state) {
   pill.replaceChildren(dot, text);
 }
 
+// Hero status line (Phase 11): the human label for the payload's core
+// state key, shown under the hero caption. The idle/ready label is
+// "READY TO ASSIST"; every other label names the real state the
+// desktop app reported. Standalone (no state ever pushed) it says
+// NOT CONNECTED rather than pretending the assistant is ready.
+const CORE_STATUS_TEXT = {
+  idle: "READY TO ASSIST",
+  ready: "READY TO ASSIST",
+  listening: "LISTENING",
+  thinking: "THINKING",
+  processing: "PROCESSING",
+  executing: "EXECUTING",
+  speaking: "SPEAKING",
+  completed: "TASK COMPLETED",
+  error: "ERROR"
+};
+function updateCoreStatus(state) {
+  const label = $("#coreStatusLabel");
+  const wrap = $("#coreStatus");
+  if (!label) return;
+  if (!connected || !state) {
+    label.textContent = "NOT CONNECTED";
+    if (wrap) wrap.dataset.state = "idle";
+    return;
+  }
+  const core = state.core || {};
+  const key = core.state || "idle";
+  label.textContent = CORE_STATUS_TEXT[key] || (core.mode ? String(core.mode) : "READY TO ASSIST");
+  if (wrap) wrap.dataset.state = key;
+}
+
 // Chat heading pill: mirrors the live core state from the payload —
 // the active core mode while the app is busy, READY when it is idle.
 // Before the first state push (standalone demo) it says NOT
@@ -236,16 +309,30 @@ function updateTypingIndicator(state) {
 // ---------------------------------------------------------------------------
 const PERF_BARS = 38;
 const perfData = [];
+const perfRamData = [];
 let perfCpu = null; let perfRam = null;
 function fmtPercent(value) { return value == null ? "—" : Math.round(value) + "%"; }
+function perfBarHeight(value) { return (value == null ? 0 : Math.max(0, Math.min(100, value))) + "%"; }
 function renderPerf() {
   const chart = $("#performanceChart");
   if (!chart) return;
-  while (chart.children.length < PERF_BARS) chart.appendChild(document.createElement("span"));
+  // Equalizer-style columns (Phase 11): each column carries the real
+  // CPU sample in front and the real RAM sample behind it, both from
+  // the same pushed state. A missing sample stays at 0 height — the
+  // strip is never decorated with invented motion.
+  while (chart.children.length < PERF_BARS) {
+    const col = document.createElement("span");
+    const ramBar = document.createElement("i"); ramBar.className = "ram-bar";
+    const cpuBar = document.createElement("i"); cpuBar.className = "cpu-bar";
+    col.append(ramBar, cpuBar);
+    chart.appendChild(col);
+  }
   while (chart.children.length > PERF_BARS) chart.removeChild(chart.lastChild);
-  [...chart.children].forEach((bar, i) => {
-    const value = i < perfData.length ? perfData[i] : null;
-    bar.style.height = (value == null ? 0 : Math.max(0, Math.min(100, value))) + "%";
+  [...chart.children].forEach((col, i) => {
+    const cpuBar = col.querySelector(".cpu-bar");
+    const ramBar = col.querySelector(".ram-bar");
+    if (cpuBar) cpuBar.style.height = perfBarHeight(i < perfData.length ? perfData[i] : null);
+    if (ramBar) ramBar.style.height = perfBarHeight(i < perfRamData.length ? perfRamData[i] : null);
   });
   const caption = $("#perfCaption");
   if (caption) caption.textContent = `CPU ${fmtPercent(perfCpu)} · RAM ${fmtPercent(perfRam)}`;
@@ -273,7 +360,7 @@ function setRing(stat, value) {
 window.orvixPushState = function (state) {
   if (!state || typeof state !== "object") return;
   lastState = state; window.__orvixState = state;
-  if (!connected) { connected = true; bridgeApi = bridgeApi || detectBridge(); setConnectedUI(true); }
+  if (!connected) { connected = true; bridgeApi = bridgeApi || detectBridge(); setConnectedUI(true); requestPortraits(); }
 
   const versionEl = $("#appVersion");
   if (versionEl) versionEl.textContent = state.version ? "v" + state.version : "—";
@@ -327,6 +414,7 @@ window.orvixPushState = function (state) {
   updateModelPill(state);
   updateChatPill(state);
   updateTypingIndicator(state);
+  updateCoreStatus(state);
   renderTasks();
 
   if (state.character) {
@@ -352,6 +440,8 @@ window.orvixPushState = function (state) {
   perfRam = stats.ram == null ? null : stats.ram;
   perfData.push(stats.cpu == null ? null : stats.cpu);
   while (perfData.length > PERF_BARS) perfData.shift();
+  perfRamData.push(stats.ram == null ? null : stats.ram);
+  while (perfRamData.length > PERF_BARS) perfRamData.shift();
   renderPerf();
 };
 
@@ -639,8 +729,26 @@ function showTab(tab) {
   }
   $$(".nav-item").forEach(item => item.classList.toggle("active", item.dataset.tab === tab));
 }
+// Voice nav entry (Phase 11): Voice is a panel on the home view, not a
+// separate page — the nav item brings the user to it: the home view is
+// shown, the Voice Control panel is scrolled into view and flashed so
+// the eye lands on it, and Voice stays the active nav item. Every
+// control inside the panel keeps its existing wiring (wake toggle,
+// wake phrase pill, Stop Speaking).
+function focusVoicePanel() {
+  showTab("home");
+  $$(".nav-item").forEach(item => item.classList.toggle("active", item.dataset.tab === "voice"));
+  const panel = $(".voice-panel");
+  if (!panel) return;
+  panel.scrollIntoView({ behavior: "smooth", block: "center" });
+  panel.classList.remove("focus-flash");
+  void panel.offsetWidth;
+  panel.classList.add("focus-flash");
+  setTimeout(() => panel.classList.remove("focus-flash"), 2600);
+}
 $$(".nav-item").forEach(button => button.addEventListener("click", () => {
   const tab = button.dataset.tab;
+  if (tab === "voice") { focusVoicePanel(); return; }
   if (tab === "settings" && connected && bridgeApi && typeof bridgeApi.openConsole === "function") {
     callBridge("openConsole", []);
     toast("Settings open in the ORVIX console window.");
@@ -657,6 +765,111 @@ $("#tasksBackHome").addEventListener("click", () => showTab("home"));
 setConnectedUI(false);
 updateChatPill(null);
 updateTypingIndicator(null);
+updateCoreStatus(null);
 renderTasks();
 renderPerf();
 tryConnect();
+
+// ---------------------------------------------------------------------------
+// Ambient FX (Phase 11): two lightweight canvas particle layers — a
+// slow drift behind the whole page and a small orbital field inside
+// the hero reactor. Pure decoration: no data is read or invented.
+// One shared requestAnimationFrame loop drives both; it pauses while
+// the document is hidden and stops entirely while the Settings >
+// Appearance animations toggle is off (body.no-animations), matching
+// the CSS animations. A slow watchdog restarts it if the toggle is
+// switched back on.
+// ---------------------------------------------------------------------------
+const FX_STATE_COLORS = {
+  idle: "#00dfff", ready: "#00dfff", listening: "#00e88f",
+  thinking: "#a78bfa", processing: "#ffb020", executing: "#38bdf8",
+  speaking: "#2dd4bf", completed: "#00e88f", error: "#ff4d5e"
+};
+const fx = { running: false, raf: 0, bg: [], core: [], w: 0, h: 0, cw: 0, ch: 0 };
+function fxSeed() {
+  const bgCanvas = $("#bgCanvas");
+  const coreCanvas = $("#reactorParticles");
+  if (bgCanvas) {
+    fx.w = bgCanvas.width = window.innerWidth;
+    fx.h = bgCanvas.height = window.innerHeight;
+    if (!fx.bg.length) {
+      for (let i = 0; i < 55; i++) {
+        fx.bg.push({ x: Math.random() * fx.w, y: Math.random() * fx.h,
+          r: Math.random() * 1.8 + 0.4, s: Math.random() * 0.16 + 0.04,
+          drift: Math.random() * 0.1 - 0.05 });
+      }
+    }
+  }
+  if (coreCanvas) {
+    fx.cw = coreCanvas.width;
+    fx.ch = coreCanvas.height;
+    if (!fx.core.length) {
+      for (let i = 0; i < 26; i++) {
+        fx.core.push({ a: Math.random() * Math.PI * 2,
+          orbit: 0.3 + Math.random() * 0.62,
+          speed: (Math.random() * 0.25 + 0.08) * (Math.random() < 0.5 ? 1 : -1),
+          r: Math.random() * 1.7 + 0.5 });
+      }
+    }
+  }
+}
+function fxDraw() {
+  const bgCanvas = $("#bgCanvas");
+  if (bgCanvas && fx.w) {
+    const ctx = bgCanvas.getContext("2d");
+    ctx.clearRect(0, 0, fx.w, fx.h);
+    ctx.fillStyle = "rgba(0, 223, 255, 0.5)";
+    fx.bg.forEach((p) => {
+      p.y -= p.s; p.x += p.drift;
+      if (p.y < -4) { p.y = fx.h + 4; p.x = Math.random() * fx.w; }
+      if (p.x < -4) p.x = fx.w + 4; else if (p.x > fx.w + 4) p.x = -4;
+      ctx.globalAlpha = 0.14 + (p.r / 2.2) * 0.3;
+      ctx.beginPath(); ctx.arc(p.x, p.y, p.r, 0, Math.PI * 2); ctx.fill();
+    });
+    ctx.globalAlpha = 1;
+  }
+  const coreCanvas = $("#reactorParticles");
+  const wrap = $("#coreWrap");
+  if (coreCanvas && wrap && fx.cw) {
+    const ctx = coreCanvas.getContext("2d");
+    const cx = fx.cw / 2; const cy = fx.ch / 2;
+    const maxOrbit = Math.min(cx, cy) * 0.96;
+    ctx.clearRect(0, 0, fx.cw, fx.ch);
+    ctx.fillStyle = FX_STATE_COLORS[wrap.dataset.state] || FX_STATE_COLORS.idle;
+    fx.core.forEach((p) => {
+      p.a += p.speed * 0.016;
+      const x = cx + Math.cos(p.a) * maxOrbit * p.orbit;
+      const y = cy + Math.sin(p.a) * maxOrbit * p.orbit;
+      ctx.globalAlpha = 0.25 + p.orbit * 0.5;
+      ctx.beginPath(); ctx.arc(x, y, p.r, 0, Math.PI * 2); ctx.fill();
+    });
+    ctx.globalAlpha = 1;
+  }
+}
+function fxStep() {
+  if (!fx.running) return;
+  fxDraw();
+  fx.raf = requestAnimationFrame(fxStep);
+}
+function fxStart() {
+  if (fx.running || document.hidden) return;
+  if (document.body.classList.contains("no-animations")) return;
+  fxSeed();
+  fx.running = true;
+  fx.raf = requestAnimationFrame(fxStep);
+}
+function fxStop() {
+  fx.running = false;
+  cancelAnimationFrame(fx.raf);
+  ["#bgCanvas", "#reactorParticles"].forEach((selector) => {
+    const canvas = $(selector);
+    if (canvas) canvas.getContext("2d").clearRect(0, 0, canvas.width, canvas.height);
+  });
+}
+document.addEventListener("visibilitychange", () => { if (document.hidden) fxStop(); else fxStart(); });
+window.addEventListener("resize", () => { if (fx.running) fxSeed(); });
+setInterval(() => {
+  if (document.body.classList.contains("no-animations")) fxStop();
+  else fxStart();
+}, 1600);
+fxStart();

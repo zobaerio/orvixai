@@ -3,11 +3,12 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <meta name="theme-color" content="#050d1d" />
+  <meta name="theme-color" content="#030916" />
   <title>ORVIX — AI Agent Assistant</title>
   <link rel="stylesheet" href="style.css" />
 </head>
 <body>
+  <canvas id="bgCanvas" aria-hidden="true"></canvas>
   <div class="app-shell">
     <header class="topbar">
       <a class="brand" href="#" aria-label="ORVIX Home">
@@ -18,6 +19,7 @@
         <button class="nav-item active" data-tab="home">⌂ <span>Home</span></button>
         <button class="nav-item" data-tab="tools">▦ <span>Tools</span></button>
         <button class="nav-item" data-tab="tasks">▤ <span>Tasks</span></button>
+        <button class="nav-item" data-tab="voice">🎙 <span>Voice</span></button>
         <button class="nav-item" data-tab="settings">⚙ <span>Settings</span></button>
         <button class="nav-item" data-tab="about">ⓘ <span>About</span></button>
       </nav>
@@ -47,9 +49,9 @@
         <section class="panel character-panel">
           <div class="panel-heading"><h2>♟ Choose Your Character</h2><span class="muted">3 PROFILES</span></div>
           <div class="character-grid">
-            <button class="character selected" data-character="LUNA"><span class="character-art luna">L</span><b>LUNA</b><small>Calm strategy companion</small><i></i></button>
-            <button class="character" data-character="RUBY"><span class="character-art ruby">R</span><b>RUBY</b><small>Confident action companion</small><i></i></button>
-            <button class="character" data-character="MAYA"><span class="character-art maya">M</span><b>MAYA</b><small>Warm creative companion</small><i></i></button>
+            <button class="character selected" data-character="LUNA"><span class="character-art luna"><span class="art-letter">L</span></span><b>LUNA</b><small>Calm strategy companion</small><i></i></button>
+            <button class="character" data-character="RUBY"><span class="character-art ruby"><span class="art-letter">R</span></span><b>RUBY</b><small>Confident action companion</small><i></i></button>
+            <button class="character" data-character="MAYA"><span class="character-art maya"><span class="art-letter">M</span></span><b>MAYA</b><small>Warm creative companion</small><i></i></button>
           </div>
         </section>
 
@@ -66,12 +68,15 @@
           <div class="hero-grid"></div>
           <div class="hero-kicker"><span></span> YOUR SMART AI COMPANION <span></span></div>
           <div class="reactor-wrap" id="coreWrap" data-state="idle">
-            <div class="reactor outer"></div><div class="reactor middle"></div><div class="reactor inner"></div>
+            <div class="reactor outer"></div><div class="reactor ticks"></div><div class="reactor middle"></div><div class="reactor sweep"></div><div class="reactor inner"></div>
+            <div class="reactor orbit"><i></i></div>
+            <canvas class="reactor-particles" id="reactorParticles" width="320" height="320" aria-hidden="true"></canvas>
             <div class="core-logo">▲</div>
           </div>
           <h1>ORVIX</h1>
           <p class="hero-subtitle">AI AGENT ASSISTANT</p>
           <div class="hero-caption"><span>Speak</span><i>•</i><span>Command</span><i>•</i><span>Get Results</span></div>
+          <div class="hero-status" id="coreStatus" data-state="idle"><span class="pulse-dot"></span><span id="coreStatusLabel">READY TO ASSIST</span></div>
           <div class="hero-bottom"><span class="pulse-dot"></span> <span id="coreModeLabel">—</span> <span class="separator">/</span> <span id="activeCharacter">—</span> ONLINE</div>
         </section>
 
@@ -121,7 +126,7 @@
         <section class="panel performance-panel">
           <div class="panel-heading"><h2>▥ Live Performance</h2><span class="muted">LIVE</span></div>
           <div class="performance-chart" id="performanceChart" aria-label="Live performance graph — CPU and RAM samples"></div>
-          <div class="performance-labels"><span id="perfCaption">CPU — · RAM —</span></div>
+          <div class="performance-labels"><span class="perf-legend"><i class="perf-dot cpu"></i>CPU</span><span id="perfCaption">CPU — · RAM —</span><span class="perf-legend"><i class="perf-dot ram"></i>RAM</span></div>
         </section>
       </aside>
     </main>

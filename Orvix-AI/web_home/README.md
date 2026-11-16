@@ -55,5 +55,10 @@ Python → JavaScript — the app pushes live state by evaluating:
 - `style.css` starts with a Google Fonts `@import`. Inside the WebView
   with no network it simply degrades to the system font stack
   (Inter → Arial/sans-serif, Rajdhani → sans-serif); layout is unaffected.
-- Character portraits intentionally use styled initial-letter art
-  (L / R / M tiles) — no external image files are referenced.
+- Character cards show the owner's real reference portraits: after
+  the bridge connects, the page asks it for the images once
+  (`getCharacterPortraits`) and the bridge injects them as data URIs,
+  because the WebView cannot be relied on to reach the app's local
+  asset files. A character whose image file is missing keeps the
+  styled initial-letter art (L / R / M tiles). No external image
+  files or URLs are ever referenced.
