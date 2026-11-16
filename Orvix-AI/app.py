@@ -46,6 +46,7 @@ from orvix.branding import ensure_brand_assets
 from orvix.startup import is_windows_startup_enabled, set_windows_startup
 from orvix.ui_formatters import bounded_float, bounded_int, bounded_window_origin, format_header_clock, format_message_time
 from orvix.webview_home import WebViewHome, webview_available, webview_home_enabled
+from orvix.notify import notify_event
 
 BG = "#0b1120"
 PANEL = "#111a2e"
@@ -2986,6 +2987,14 @@ class OrvixDesktop:
     def _finish_response(self, result: str, task_id: str | None = None, task_status: str = "completed") -> None:
         self._write_message("ORVIX", result, "assistant")
         self._push_activity(f"{task_status.upper()}: " + (self._active_task_command or result).splitlines()[0])
+        # Native notification at the same finalised outcome that sets
+        # the COMPLETED / ERROR core states below (partial counts as
+        # completed, exactly as the core state does; cancelled tasks
+        # have no notification kind and stay in-app only).
+        if task_status == "failed":
+            self._notify("task_failed", self._active_task_command or result)
+        elif task_status in ("completed", "partial"):
+            self._notify("task_completed", self._active_task_command or result)
         if task_id is None or task_id == self._active_task_id:
             self._active_task_id = None
             self._active_task_cancel_event = None
@@ -3107,6 +3116,25 @@ class OrvixDesktop:
         except Exception:
             pass
 
+    def _notify(self, kind: str, detail: str = "") -> None:
+        """Best-effort native notification for a real app event.
+
+        Delegates to orvix.notify.notify_event, which fires only
+        when the per-event Settings toggle is on and a tray icon
+        exists (background mode). It never raises and never
+        replaces the in-app SYSTEM messages, which remain the
+        fallback when the tray is unavailable or the toggle is off.
+        """
+        try:
+            notify_event(
+                self.settings,
+                getattr(self, "_tray_icon", None),
+                kind,
+                detail=detail,
+            )
+        except Exception:
+            pass
+
     def _toggle_wake_word(self) -> None:
         if self.wake_enabled:
             self.wake_enabled = False
@@ -3184,6 +3212,7 @@ class OrvixDesktop:
         if not self.wake_enabled:
             return
         self._push_activity("Wake word detected")
+        self._notify("wake_activation", heard)
         if command:
             self._write_message("SYSTEM", f"Wake word detected: {heard}", "system")
             self._send_text(command)
@@ -3474,7 +3503,7 @@ class OrvixDesktop:
     def _open_settings(self) -> None:
         win = tk.Toplevel(self.root)
         win.title("ORVIX Settings")
-        win.geometry("600x700")
+        win.geometry("600x780")
         win.resizable(False, False)
         win.configure(bg=BG)
         win.transient(self.root)
@@ -3687,6 +3716,41 @@ class OrvixDesktop:
             bg=BG, fg=MUTED, font=("Segoe UI", 8), wraplength=540, justify="left",
         ).pack(fill="x", pady=(0, 6))
 
+        tk.Label(pad, text="Notifications", bg=BG, fg="#cbd7e8", font=("Segoe UI Semibold", 9)).pack(anchor="w", pady=(6, 5))
+        notify_task_completed_var = tk.BooleanVar(value=bool(self.settings.get("notify_task_completed", True)))
+        tk.Checkbutton(
+            pad,
+            text="Notify when a task completes",
+            variable=notify_task_completed_var, bg=BG, fg=TEXT, activebackground=BG,
+            activeforeground=TEXT, selectcolor=CARD, font=("Segoe UI", 9),
+        ).pack(anchor="w", pady=(0, 2))
+        notify_task_failed_var = tk.BooleanVar(value=bool(self.settings.get("notify_task_failed", True)))
+        tk.Checkbutton(
+            pad,
+            text="Notify when a task fails",
+            variable=notify_task_failed_var, bg=BG, fg=TEXT, activebackground=BG,
+            activeforeground=TEXT, selectcolor=CARD, font=("Segoe UI", 9),
+        ).pack(anchor="w", pady=(0, 2))
+        notify_endpoint_health_var = tk.BooleanVar(value=bool(self.settings.get("notify_endpoint_health", True)))
+        tk.Checkbutton(
+            pad,
+            text="Notify with endpoint health results (connection test)",
+            variable=notify_endpoint_health_var, bg=BG, fg=TEXT, activebackground=BG,
+            activeforeground=TEXT, selectcolor=CARD, font=("Segoe UI", 9),
+        ).pack(anchor="w", pady=(0, 2))
+        notify_wake_var = tk.BooleanVar(value=bool(self.settings.get("notify_wake_activation", True)))
+        tk.Checkbutton(
+            pad,
+            text="Notify when the wake phrase activates ORVIX",
+            variable=notify_wake_var, bg=BG, fg=TEXT, activebackground=BG,
+            activeforeground=TEXT, selectcolor=CARD, font=("Segoe UI", 9),
+        ).pack(anchor="w", pady=(0, 2))
+        tk.Label(
+            pad,
+            text="Native notifications are shown by the system tray while ORVIX runs in background mode. They are on by default and each type can be switched off here. The in-app messages always remain, whether a notification is sent or not.",
+            bg=BG, fg=MUTED, font=("Segoe UI", 8), wraplength=540, justify="left",
+        ).pack(fill="x", pady=(0, 6))
+
         connection_status = tk.Label(
             pad, text="Connection not tested yet.", bg=BG, fg=MUTED,
             font=("Segoe UI", 9), justify="left", wraplength=540,
@@ -3711,6 +3775,12 @@ class OrvixDesktop:
                 color = ACCENT if connected and model_available is not False else ORANGE
                 connection_status.configure(text=f"Connection test: {result.get('message', 'No result.')}", fg=color)
                 test_button.configure(state="normal", text="Test Connection")
+                # Endpoint-health notification at this real result
+                # point: the applied outcome of an on-demand
+                # connection test. There is no periodic health
+                # polling in the desktop flow, so no other
+                # endpoint_health events are fired.
+                self._notify("endpoint_health", str(result.get("message", "")))
             except tk.TclError:
                 pass
 
@@ -3743,6 +3813,10 @@ class OrvixDesktop:
             new["webview_home"] = bool(webview_var.get())
             new["voice_vad_enabled"] = bool(vad_var.get())
             new["voice_barge_in"] = bool(barge_var.get())
+            new["notify_task_completed"] = bool(notify_task_completed_var.get())
+            new["notify_task_failed"] = bool(notify_task_failed_var.get())
+            new["notify_endpoint_health"] = bool(notify_endpoint_health_var.get())
+            new["notify_wake_activation"] = bool(notify_wake_var.get())
             try:
                 new["speech_rate"] = validate_speech_rate(rate_var.get())
                 new["speech_volume"] = validate_speech_volume(volume_var.get())

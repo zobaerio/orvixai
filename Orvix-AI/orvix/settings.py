@@ -79,6 +79,17 @@ DEFAULTS: dict[str, Any] = {
     # both UIs display, so the label and the matcher can never drift
     # apart again. Validated by validate_wake_phrase.
     "wake_phrase": "hey orvix",
+    # Native notifications (system-tray toasts) for real app events.
+    # New in the Premium Phase 6 upgrade: on by default, individually
+    # switchable in Settings. They decorate the existing in-app
+    # SYSTEM messages, never replace them; when no tray icon exists
+    # (ORVIX not in background mode) nothing is sent and nothing is
+    # lost. endpoint_health fires at real health-result points only
+    # (the Settings connection test); there is no polling loop.
+    "notify_task_completed": True,
+    "notify_task_failed": True,
+    "notify_endpoint_health": True,
+    "notify_wake_activation": True,
 }
 
 
