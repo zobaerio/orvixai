@@ -147,13 +147,43 @@ class ModelStatusLineTests(unittest.TestCase):
 
 
 class QuickTileTests(unittest.TestCase):
-    def test_six_tiles_in_mockup_order(self):
+    def test_ten_tiles_in_order(self):
         tiles = quick_action_tiles()
         self.assertEqual([t.key for t in tiles],
-                         ["chrome", "youtube", "notepad", "calculator", "explorer", "power"])
+                         ["chrome", "youtube", "notepad", "calculator", "explorer",
+                          "downloads", "settings", "task_manager", "system_info", "power"])
         for tile in tiles:
             self.assertTrue(tile.label)
             self.assertTrue(tile.command)
+
+    def test_four_completion_tiles_use_existing_deterministic_commands(self):
+        # Each new tile's command must be the exact string the existing
+        # deterministic handlers already resolve (Downloads folder,
+        # ms-settings: open, taskmgr alias, system information) — no
+        # new command strings that would fall through to the AI model.
+        by_key = {t.key: t for t in quick_action_tiles()}
+        self.assertEqual(by_key["downloads"].command, "Downloads kholo")
+        self.assertEqual(by_key["downloads"].label, "Downloads")
+        self.assertEqual(by_key["settings"].command, "Windows Settings kholo")
+        self.assertEqual(by_key["settings"].label, "Windows Settings")
+        self.assertEqual(by_key["task_manager"].command, "Task Manager kholo")
+        self.assertEqual(by_key["task_manager"].label, "Task Manager")
+        self.assertEqual(by_key["system_info"].command, "system information")
+        self.assertEqual(by_key["system_info"].label, "System Information")
+
+    def test_power_tile_is_deterministic_power_options(self):
+        # Bug #11: the power tile must not route free text to the AI
+        # model. Its command is the deterministic power-options
+        # command and its metadata marks it as the power tile; every
+        # other tile stays a plain command tile.
+        by_key = {t.key: t for t in quick_action_tiles()}
+        power = by_key["power"]
+        self.assertEqual(power.label, "Power Options")
+        self.assertEqual(power.command, "power options")
+        self.assertEqual(power.kind, "power")
+        for key, tile in by_key.items():
+            if key != "power":
+                self.assertEqual(tile.kind, "command")
 
 
 if __name__ == "__main__":

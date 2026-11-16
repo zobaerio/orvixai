@@ -277,9 +277,14 @@ TOOLS: list[dict[str, Any]] = [
 
 
 class OrvixAgent:
-    def __init__(self, settings: dict[str, Any], approval: Callable[[str, str], bool]) -> None:
+    def __init__(self, settings: dict[str, Any], approval: Callable[[str, str], bool], countdown_wait=None) -> None:
         self.settings = settings
         self.approval = approval
+        # Optional countdown callback for gated power actions
+        # (restart / shut down): callable(seconds) -> True only when
+        # the countdown completed uncancelled. Without it those
+        # actions fail closed in the automation layer.
+        self.countdown_wait = countdown_wait
         self.history: list[dict[str, Any]] = []
         self.last_tool_call_count = 0
         self.last_tool_call_names: list[str] = []
@@ -353,7 +358,9 @@ class OrvixAgent:
             return cancelled_response("কাজটি বাতিল করা হয়েছে। বাতিলের অনুরোধ পাওয়ার পর নতুন কোনো action শুরু করা হয়নি।")
 
         report("Checking supported local commands")
-        direct = automation.direct_command(user_text)
+        direct = automation.direct_command(
+            user_text, approve=self.approval,
+            countdown_wait=self.countdown_wait)
         if direct is not None:
             if cancelled():
                 return cancelled_response("বাতিলের অনুরোধ local command চলার সময় এসেছে। Command-এর ফল ইতিমধ্যে ঘটতে পারে: " + direct)

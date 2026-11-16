@@ -168,6 +168,12 @@ class ActionCommandsTests(unittest.TestCase):
         for key in ("chrome", "youtube", "notepad", "calculator", "files", "power"):
             self.assertIn(key, ACTION_COMMANDS)
 
+    def test_four_new_html_actions_present(self):
+        # Phase 4 completions: Downloads, Windows Settings, Task
+        # Manager and System Information are real bridge actions.
+        for key in ("downloads", "settings", "task_manager", "system_info"):
+            self.assertIn(key, ACTION_COMMANDS)
+
     def test_commands_equal_quick_action_tiles(self):
         tiles = {tile.key: tile.command for tile in quick_action_tiles()}
         for key, command in tiles.items():
@@ -528,6 +534,19 @@ class StaticWebHomeTests(unittest.TestCase):
         self.assertIn("endpointState", self.app_js)
         self.assertIn("ENDPOINT CONFIGURED", self.app_js)
         self.assertIn("NOT CONFIGURED", self.app_js)
+
+    def test_quick_grid_has_all_ten_tiles_and_honest_power_label(self):
+        # Phase 4: the web quick grid carries the four completion
+        # tiles, and the power tile is labelled for what it does —
+        # it opens the deterministic power options, not a free-text
+        # "menu" routed to the AI model.
+        for action in ("downloads", "settings", "task_manager", "system_info"):
+            self.assertIn(f'data-action="{action}"', self.index_html)
+        self.assertIn("Windows Settings", self.index_html)
+        self.assertIn("Task Manager", self.index_html)
+        self.assertIn("System Information", self.index_html)
+        self.assertIn("Power Options", self.index_html)
+        self.assertNotIn("Power Menu", self.index_html)
 
     def test_footer_links_point_at_real_repo_only(self):
         self.assertIn("https://github.com/zobaerio/orvixai", self.index_html)

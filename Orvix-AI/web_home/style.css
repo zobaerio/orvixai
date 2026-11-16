@@ -54,3 +54,8 @@
 .stop-row{padding:8px 18px 0}
 .stop-speaking-button{background:#3a1220;border:1px solid #b5443c;color:#ff9d94;border-radius:20px;padding:5px 14px;font-weight:800;font-size:10px}
 .stop-speaking-button:hover{background:#4a1828}
+
+/* Quick Actions completions (Phase 4): Downloads, Windows Settings,
+   Task Manager and System Information tiles share the quick-grid
+   styling; only their icon colours differ. */
+.settings{color:#a5f3fc}.task-manager{color:#34d399}.system-info{color:#93c5fd}

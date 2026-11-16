@@ -533,6 +533,235 @@ def get_system_info() -> str:
     )
 
 
+# ---------------------------------------------------------------------------
+# Power controls (Windows only)
+#
+# The raw OS calls live behind small helpers (_os_lock_workstation /
+# _os_shutdown) so tests can mock the OS boundary cleanly: patch the
+# platform check (_is_windows_platform) and the helper, and no real
+# power action can happen. Restart / shut down additionally require
+# BOTH an approval callback and a countdown callback — see
+# request_restart / request_shutdown. No user text ever reaches the
+# OS call: the shutdown arguments are fixed lists built in code.
+# ---------------------------------------------------------------------------
+
+POWER_COUNTDOWN_SECONDS = 30
+
+# Fixed shutdown.exe argument lists — never built from user input,
+# never run through a shell.
+_RESTART_ARGS = ["shutdown.exe", "/r", "/t", "0"]
+_SHUTDOWN_ARGS = ["shutdown.exe", "/s", "/t", "0"]
+
+POWER_OPTIONS_MESSAGE = (
+    "Power options:\n"
+    "- Lock workstation — say or type 'lock workstation' (runs immediately).\n"
+    "- Restart — say or type 'restart computer' (asks for approval, "
+    "then shows a 30-second countdown you can cancel).\n"
+    "- Shut down — say or type 'shut down computer' (asks for approval, "
+    "then shows a 30-second countdown you can cancel)."
+)
+
+_LOCK_COMMANDS = {
+    "lock workstation", "lock computer", "lock pc", "lock",
+    "lock the computer", "lock the workstation",
+}
+_RESTART_COMMANDS = {
+    "restart computer", "restart pc", "restart windows", "restart",
+    "restart the computer", "reboot computer", "reboot",
+}
+_SHUTDOWN_COMMANDS = {
+    "shut down computer", "shutdown computer", "shut down pc",
+    "shutdown pc", "shut down windows", "shutdown windows",
+    "shut down", "shutdown", "power off computer", "power off",
+}
+_POWER_OPTIONS_COMMANDS = {
+    "power options", "power menu", "power",
+    "show power options", "open power options", "open power menu",
+}
+
+
+def _os_lock_workstation() -> bool:
+    """OS boundary for locking: the actual Win32 call. Mocked in tests."""
+    import ctypes
+
+    return bool(ctypes.windll.user32.LockWorkStation())  # type: ignore[attr-defined]
+
+
+def _os_shutdown(args: list) -> bool:
+    """OS boundary for restart / shut down: fixed-argument shutdown.exe.
+
+    ``args`` is always one of the fixed lists above, passed as an
+    explicit argument list with no shell. Mocked in tests.
+    """
+    completed = subprocess.run(
+        list(args), shell=False, capture_output=True, text=True, timeout=15)
+    return completed.returncode == 0
+
+
+# Aliases for the OS boundaries, so either naming reads naturally at
+# call sites / in tests.
+_call_lock_workstation = _os_lock_workstation
+_call_shutdown_command = _os_shutdown
+
+
+def lock_workstation() -> str:
+    """Lock the workstation immediately. Windows only.
+
+    The explicit lock command / tile click IS the confirmation, so no
+    extra approval or countdown applies. The result reflects the OS
+    call's actual outcome — a failure is never reported as success.
+    """
+    if not _is_windows_platform():
+        return "Lock workstation is only available on Windows. Nothing was locked."
+    try:
+        locked = _os_lock_workstation()
+    except Exception as exc:
+        return f"Lock workstation failed safely ({type(exc).__name__}). The workstation was not locked."
+    if not locked:
+        return "Lock workstation failed: Windows did not lock the workstation."
+    return "Workstation locked."
+
+
+def restart_windows() -> str:
+    """Initiate a Windows restart via the fixed shutdown.exe call.
+
+    This is the raw OS step only — approval and countdown gating live
+    in :func:`request_restart`, which is the path commands use.
+    Windows only; the result reflects the OS call's actual outcome.
+    """
+    if not _is_windows_platform():
+        return "Restart is only available on Windows. Nothing was restarted."
+    try:
+        started = _os_shutdown(list(_RESTART_ARGS))
+    except Exception as exc:
+        return f"Restart failed safely ({type(exc).__name__}). No restart was initiated."
+    if not started:
+        return "Restart failed: Windows did not initiate a restart."
+    return "Restart initiated."
+
+
+def shutdown_windows() -> str:
+    """Initiate a Windows shut down via the fixed shutdown.exe call.
+
+    Raw OS step only — gating lives in :func:`request_shutdown`.
+    Windows only; the result reflects the OS call's actual outcome.
+    """
+    if not _is_windows_platform():
+        return "Shut down is only available on Windows. Nothing was shut down."
+    try:
+        started = _os_shutdown(list(_SHUTDOWN_ARGS))
+    except Exception as exc:
+        return f"Shut down failed safely ({type(exc).__name__}). No shut down was initiated."
+    if not started:
+        return "Shut down failed: Windows did not initiate a shut down."
+    return "Shut down initiated."
+
+
+def _power_approved(approve, title: str, message: str) -> bool:
+    """Fail closed: no approver, a refusal, or an approver error all
+    mean the power action does not run."""
+    if approve is None:
+        return False
+    try:
+        return bool(approve(title, message))
+    except Exception:
+        return False
+
+
+def _power_countdown_completed(countdown_wait, seconds: int) -> bool:
+    """Fail closed: no countdown mechanism, a cancel, or a countdown
+    error all mean the power action does not run. ``countdown_wait``
+    is a callable taking the seconds and returning True only when the
+    countdown ran to completion uncancelled."""
+    if countdown_wait is None:
+        return False
+    try:
+        return bool(countdown_wait(seconds))
+    except Exception:
+        return False
+
+
+def request_restart(approve=None, countdown_wait=None,
+                    countdown_seconds: int = POWER_COUNTDOWN_SECONDS) -> str:
+    """Gated restart: approval first, then a cancellable countdown.
+
+    The OS call runs exactly once, and only after approval was given
+    AND the countdown completed uncancelled.
+    """
+    if not _is_windows_platform():
+        return "Restart is only available on Windows. Nothing was restarted."
+    if not _power_approved(
+            approve, "Confirm restart",
+            "Restart this computer?\n\n"
+            "Unsaved work in other apps may be lost. "
+            "After approval a countdown will run and you can still cancel."):
+        return "Restart cancelled: approval was not given. Nothing was restarted."
+    if not _power_countdown_completed(countdown_wait, countdown_seconds):
+        return "Restart cancelled before it was initiated. Nothing was restarted."
+    return restart_windows()
+
+
+def request_shutdown(approve=None, countdown_wait=None,
+                     countdown_seconds: int = POWER_COUNTDOWN_SECONDS) -> str:
+    """Gated shut down: approval first, then a cancellable countdown.
+
+    The OS call runs exactly once, and only after approval was given
+    AND the countdown completed uncancelled.
+    """
+    if not _is_windows_platform():
+        return "Shut down is only available on Windows. Nothing was shut down."
+    if not _power_approved(
+            approve, "Confirm shut down",
+            "Shut down this computer?\n\n"
+            "Unsaved work in other apps may be lost. "
+            "After approval a countdown will run and you can still cancel."):
+        return "Shut down cancelled: approval was not given. Nothing was shut down."
+    if not _power_countdown_completed(countdown_wait, countdown_seconds):
+        return "Shut down cancelled before it was initiated. Nothing was shut down."
+    return shutdown_windows()
+
+
+def execute_power_action(action: str, approve=None, countdown_wait=None,
+                         countdown_seconds: int = POWER_COUNTDOWN_SECONDS) -> str:
+    """Run one named power action ('lock' / 'restart' / 'shutdown')
+    with the gating that action requires."""
+    key = str(action or "").strip().casefold()
+    if key in {"lock", "lock workstation", "lock computer"}:
+        return lock_workstation()
+    if key in {"restart", "restart computer", "reboot"}:
+        return request_restart(approve, countdown_wait, countdown_seconds)
+    if key in {"shutdown", "shut down", "shut down computer", "power off"}:
+        return request_shutdown(approve, countdown_wait, countdown_seconds)
+    return POWER_OPTIONS_MESSAGE
+
+
+def is_power_command(text: str) -> bool:
+    """True when ``text`` is one of the deterministic power commands."""
+    low = str(text or "").strip().casefold().strip(".!? ")
+    return low in (_LOCK_COMMANDS | _RESTART_COMMANDS
+                   | _SHUTDOWN_COMMANDS | _POWER_OPTIONS_COMMANDS)
+
+
+def handle_power_command(text: str, approve=None, countdown_wait=None,
+                         countdown_seconds: int = POWER_COUNTDOWN_SECONDS) -> str | None:
+    """Deterministic power handling for typed / voice / tile commands.
+
+    Returns None when ``text`` is not a power command, so the caller
+    can continue with its normal routing. Power-options requests only
+    describe the options — they never run a power action themselves.
+    """
+    low = str(text or "").strip().casefold().strip(".!? ")
+    if low in _POWER_OPTIONS_COMMANDS:
+        return POWER_OPTIONS_MESSAGE
+    if low in _LOCK_COMMANDS:
+        return lock_workstation()
+    if low in _RESTART_COMMANDS:
+        return request_restart(approve, countdown_wait, countdown_seconds)
+    if low in _SHUTDOWN_COMMANDS:
+        return request_shutdown(approve, countdown_wait, countdown_seconds)
+    return None
+
+
 WINDOW_SHORTCUTS: dict[str, tuple[str, ...]] = {
     "CTRL+S": ("ctrl", "s"),
     "CTRL+A": ("ctrl", "a"),
@@ -1679,10 +1908,23 @@ def rename_file(location: str, filename: str, new_filename: str, approve) -> str
     return _transfer_file("rename", location, filename, location, new_filename, approve)
 
 
-def direct_command(text: str) -> str | None:
-    """Handle common app, folder, web, and basic system commands locally."""
+def direct_command(text: str, approve=None, countdown_wait=None) -> str | None:
+    """Handle common app, folder, web, and basic system commands locally.
+
+    Power commands are handled first, deterministically: lock runs
+    immediately, restart / shut down run only through the gated
+    :func:`handle_power_command` path (approval + countdown, using
+    the callbacks supplied here — with no callbacks they fail closed
+    and nothing runs), and power-options requests return the options
+    text. No power text ever falls through to the AI model.
+    """
     value = text.strip()
     low = value.casefold().strip(".!? ")
+
+    power_result = handle_power_command(
+        value, approve=approve, countdown_wait=countdown_wait)
+    if power_result is not None:
+        return power_result
 
     if low in {"system information", "system info", "computer information", "show system info", "সিস্টেম তথ্য", "কম্পিউটারের তথ্য", "সিস্টেম ইনফো"}:
         return get_system_info()
@@ -1715,7 +1957,7 @@ def direct_command(text: str) -> str | None:
         if low.endswith(suffix):
             candidates.append(value[:-len(suffix)].strip())
 
-    known_special = {"chrome", "edge", "browser", "google", "youtube", "settings", "web browser", *WORKSPACE_WEBSITE_ALIASES.keys()}
+    known_special = {"chrome", "edge", "browser", "google", "youtube", "settings", "windows settings", "web browser", *WORKSPACE_WEBSITE_ALIASES.keys()}
     for name in candidates:
         key = name.casefold()
         if key in APP_ALIASES or key in known_special:
