@@ -9,6 +9,17 @@ def format_header_clock(value: datetime) -> str:
     return f"{value:%H:%M:%S}\n{value:%a, %d %b}".upper()
 
 
+def format_message_time(value: datetime) -> str:
+    """Format a chat message timestamp as HH:MM (24-hour).
+
+    Shared by the Tk console (``_write_message``) and the WebView
+    home bridge (``push_message``) so both UIs stamp messages the
+    exact same way. Seconds are dropped: a chat list only needs
+    minute precision.
+    """
+    return f"{value:%H:%M}"
+
+
 def bounded_int(value: object, fallback: int, minimum: int, maximum: int) -> int:
     """Convert a setting to an integer and clamp it to a safe inclusive range."""
     try:

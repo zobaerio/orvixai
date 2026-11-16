@@ -76,11 +76,12 @@
         </section>
 
         <section class="panel chat-panel">
-          <div class="chat-heading"><div><span class="heading-icon">◉</span><b>AI AGENT · TASK EXECUTION</b></div><span class="ready" id="chatStatePill"><i></i> <span id="chatStateLabel">READY</span></span></div>
+          <div class="chat-heading"><div><span class="heading-icon">◉</span><b>AI AGENT · TASK EXECUTION</b></div><button class="text-button" id="clearChatButton" title="Clear the conversation view (task history is kept)">Clear</button><span class="ready" id="chatStatePill"><i></i> <span id="chatStateLabel">READY</span></span></div>
           <div class="chat-log" id="chatLog" aria-live="polite">
             <div class="message assistant-message"><b>ORVIX</b><p>আসসালামু আলাইকুম! আমি ORVIX, আপনার AI Desktop Assistant। বাংলা বা English-এ কমান্ড দিন। আমি আপনার কাজ সহজ করতে প্রস্তুত।</p><small>আপনি বলতে পারেন: “Open Chrome”, “Notepad kholo”, “YouTube kholo”</small></div>
             <div class="system-note"><span>ⓘ SYSTEM</span><p>Live উত্তর ও telemetry ORVIX desktop bridge থেকে আসে। Bridge ছাড়া পেজটি standalone খুললে not-connected demo state দেখায় — কোনো ভুয়া data দেখানো হয় না।</p></div>
           </div>
+          <div class="typing-indicator hidden" id="typingIndicator" aria-hidden="true"><span></span><span></span><span></span><em>ORVIX is working…</em></div>
           <div class="chat-composer">
             <button class="mic-button" id="micButton" title="Start voice input">🎙</button>
             <input id="commandInput" type="text" placeholder="Ask ORVIX anything or type a command…" autocomplete="off" />

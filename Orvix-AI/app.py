@@ -44,7 +44,7 @@ from orvix.safe_errors import safe_worker_error
 from orvix.version import APP_NAME, APP_VERSION
 from orvix.branding import ensure_brand_assets
 from orvix.startup import is_windows_startup_enabled, set_windows_startup
-from orvix.ui_formatters import bounded_float, bounded_int, bounded_window_origin, format_header_clock
+from orvix.ui_formatters import bounded_float, bounded_int, bounded_window_origin, format_header_clock, format_message_time
 from orvix.webview_home import WebViewHome, webview_available, webview_home_enabled
 
 BG = "#0b1120"
@@ -57,6 +57,13 @@ TEXT = "#e5edf7"
 MUTED = "#91a4bc"
 GREEN = "#34d399"
 BORDER = "#203650"
+
+# Bounded chat growth: the Tk conversation view keeps at most this
+# many messages (the same order of magnitude as the web bridge's
+# 200-message buffer). Older messages are trimmed whole — never
+# mid-message — from the top of the view; task history is separate
+# and is never trimmed or deleted by chat housekeeping.
+MAX_CHAT_MESSAGES = 200
 
 
 class OrvixDesktop:
@@ -83,6 +90,8 @@ class OrvixDesktop:
         self._web_home = None  # WebViewHome instance while the HTML home window is open
         self.agent = OrvixAgent(self.settings, self._request_approval, countdown_wait=self._power_countdown_wait)
         self._busy = False
+        self._chat_line_counts: list[int] = []
+        self._last_response_text = ""
         self.task_store = TaskStore()
         self._startup_recovered_task_count = 0
         self._task_recovery_error: str | None = None
@@ -1060,6 +1069,12 @@ class OrvixDesktop:
         self.chat.tag_configure("name_system", foreground=MUTED, font=("Segoe UI", 8, "bold"), spacing1=7)
         self.chat.tag_configure("body", foreground=TEXT, lmargin1=0, lmargin2=0, spacing1=2, spacing3=5)
         self.chat.tag_configure("system_body", foreground=MUTED, font=("Segoe UI", 8), lmargin1=0, spacing3=4)
+        self.chat.tag_configure("time", foreground=MUTED, font=("Segoe UI", 8))
+        # Right-click menu on the conversation: Copy (selection),
+        # Copy Last Response and Clear Conversation. A widget-level
+        # binding only — the existing keyboard/selection behaviour of
+        # the Text widget is unchanged.
+        self.chat.bind("<Button-3>", self._show_chat_context_menu)
 
         # The composer lives in the full-width bottom command bar
         # (built below, after the right rail) — see _build_ui bottom bar.
@@ -1307,6 +1322,15 @@ class OrvixDesktop:
         self._show_entry_placeholder()
         self.send_btn = ttk.Button(composer, text="SEND  ➤", style="Accent.TButton", command=self._send_from_entry)
         self.send_btn.pack(side="left", padx=(10, 2), pady=6)
+        # Clear Conversation lives in the composer area: it clears
+        # ONLY the conversation view + web message buffer (with a
+        # confirmation) — task history and settings are untouched.
+        self.clear_chat_btn = tk.Button(composer, text="CLEAR", command=self._clear_conversation,
+                                        bg="#122137", fg="#c4d4e8", activebackground="#263e58",
+                                        activeforeground=TEXT, relief="flat", bd=0,
+                                        font=("Segoe UI Semibold", 8, "bold"), padx=10, pady=7,
+                                        cursor="hand2")
+        self.clear_chat_btn.pack(side="left", padx=(6, 2), pady=6)
         self.entry.focus_set()
 
         # Pack the expanding body last (see note at its creation).
@@ -1815,15 +1839,123 @@ class OrvixDesktop:
     def _write_message(self, speaker: str, text: str, kind: str) -> None:
         self.chat.configure(state="normal")
         tag = "name_user" if kind == "user" else "name_assistant" if kind == "assistant" else "name_system"
-        self.chat.insert("end", f"{speaker}\n", tag)
+        # The speaker line carries the message time (HH:MM, shared
+        # formatter — the web bridge stamps the same value onto the
+        # mirrored message in push_message).
+        stamp = format_message_time(datetime.now())
+        self.chat.insert("end", f"{speaker} ", tag)
+        self.chat.insert("end", f"· {stamp}\n", "time")
         self.chat.insert("end", f"{text}\n", "system_body" if kind == "system" else "body")
         self.chat.insert("end", "\n", "body")
+        if kind == "assistant":
+            self._last_response_text = str(text)
+        self._trim_chat_history(text)
         self.chat.configure(state="disabled")
         self.chat.see("end")
         home = getattr(self, "_web_home", None)
         if home is not None:
             try:
                 home.push_message(speaker, text, kind)
+            except Exception:
+                pass  # the web home mirror must never break the console
+
+    def _trim_chat_history(self, text: str) -> None:
+        """Bound the conversation view to MAX_CHAT_MESSAGES messages.
+
+        Must be called while the chat widget is editable (from
+        ``_write_message``). Each message occupies a known number of
+        logical lines — header + body lines + spacer — so trimming
+        deletes whole messages from the top and can never split a
+        message or corrupt a tag range mid-message. The just-added
+        message is never removed: the bound keeps at least
+        MAX_CHAT_MESSAGES entries and the newest is always last.
+        """
+        counts = getattr(self, "_chat_line_counts", None)
+        if counts is None:
+            counts = self._chat_line_counts = []
+        counts.append(str(text).count("\n") + 3)
+        while len(counts) > MAX_CHAT_MESSAGES:
+            oldest_lines = counts.pop(0)
+            self.chat.delete("1.0", f"{oldest_lines + 1}.0")
+
+    # -- chat context menu / copy --------------------------------------
+
+    def _show_chat_context_menu(self, event: tk.Event) -> None:
+        menu = tk.Menu(self.chat, tearoff=0, bg="#0b1728", fg=TEXT,
+                       activebackground="#16415b", activeforeground="#ffffff",
+                       relief="flat", bd=0)
+        menu.add_command(label="Copy", command=self._copy_chat_selection)
+        menu.add_command(label="Copy Last Response", command=self._copy_last_response)
+        menu.add_separator()
+        menu.add_command(label="Clear Conversation", command=self._clear_conversation)
+        try:
+            menu.tk_popup(event.x_root, event.y_root)
+        finally:
+            menu.grab_release()
+
+    def _copy_to_clipboard(self, text: str) -> None:
+        if not text:
+            return
+        try:
+            self.root.clipboard_clear()
+            self.root.clipboard_append(text)
+            self.root.update_idletasks()
+        except tk.TclError:
+            pass
+
+    def _copy_chat_selection(self) -> None:
+        try:
+            selected = self.chat.get("sel.first", "sel.last")
+        except tk.TclError:
+            selected = ""
+        self._copy_to_clipboard(selected)
+
+    def _copy_last_response(self) -> None:
+        self._copy_to_clipboard(getattr(self, "_last_response_text", ""))
+
+    # -- clear conversation ---------------------------------------------
+
+    def _clear_conversation(self) -> None:
+        """Confirm, then clear ONLY the conversation views + buffer.
+
+        Task history (TaskStore records) and settings are NOT
+        deleted — the confirmation text says so explicitly.
+        """
+        confirmed = messagebox.askyesno(
+            "Clear conversation",
+            "Clear the conversation view?\n\n"
+            "This clears the chat shown in this console and in the web "
+            "home, including the messages waiting to be pushed there.\n\n"
+            "Task history and settings are NOT deleted.",
+            parent=self.root)
+        if not confirmed:
+            return
+        self._clear_conversation_views()
+
+    def _clear_conversation_from_web(self) -> None:
+        """Bridge entry point for the web Clear control.
+
+        The web page already asked the user to confirm in its own UI
+        before calling the bridge, so no second desktop prompt is
+        shown; the clear itself is identical to the Tk one.
+        """
+        self._clear_conversation_views()
+
+    def _clear_conversation_views(self) -> None:
+        chat = getattr(self, "chat", None)
+        if chat is not None:
+            try:
+                chat.configure(state="normal")
+                chat.delete("1.0", "end")
+                chat.configure(state="disabled")
+            except tk.TclError:
+                pass
+        self._chat_line_counts = []
+        self._last_response_text = ""
+        home = getattr(self, "_web_home", None)
+        if home is not None:
+            try:
+                home.clear_messages()
             except Exception:
                 pass  # the web home mirror must never break the console
 
