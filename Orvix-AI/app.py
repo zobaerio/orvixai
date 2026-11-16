@@ -821,7 +821,7 @@ class OrvixDesktop:
             logo.create_image(21, 21, image=self.brand_logo_photo)
         else:
             logo.create_oval(3, 3, 40, 40, outline=ACCENT, width=2)
-            logo.create_text(21, 21, text="J", fill="#d9fbff", font=("Segoe UI Black", 20, "bold"))
+            logo.create_text(21, 21, text="O", fill="#d9fbff", font=("Segoe UI Black", 20, "bold"))
         word = tk.Frame(brand, bg="#050b17")
         word.pack(side="left", padx=(9, 0), pady=13)
         tk.Label(word, text="ORVIX", bg="#050b17", fg=TEXT,
