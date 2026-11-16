@@ -171,6 +171,62 @@ Panels refresh on a 2 s throttled timer that pauses while the main
 window is minimised or not viewable, and immediately whenever the
 core state changes (via the `_set_core_state` bridge).
 
+## Home page redesign (owner's final mockup)
+
+The home view was rebuilt to the owner's approved mockup layout
+(top nav pills, circular gauges, centred core with logotype, quick
+action icon grid, bottom command bar). All data stays real, assembled
+by the pure module `orvix/home_data.py`:
+
+- **Top bar**: brand + real `APP_VERSION`; nav pills Home / Tools /
+  Settings / About wired to existing entry points (composer focus,
+  `_quick_actions`, `_open_settings`, an About dialog with the real
+  version); endpoint pill reports only the configured endpoint kind;
+  live clock (unchanged).
+- **System Overview**: three Canvas arc gauges (CPU / RAM / Storage)
+  fed by `collect_system_stats` (psutil + `shutil.disk_usage`); the
+  LIVE indicator degrades to PARTIAL / N/A with the counters that are
+  actually readable. Windows Info strip shows real platform name /
+  edition, build and uptime (`psutil.boot_time`), dashes when a source
+  is unavailable. The Control Center panel from the HUD unit is
+  unchanged below it.
+- **Characters**: the three existing profiles as portrait cards
+  (name, role, selection dot) calling the existing `_select_character`;
+  portraits load defensively — the reference JPGs are found in the
+  app folder or in any sibling folder that still holds them, with the
+  styled initial-letter card as fallback.
+- **Centre**: the hero Floating AI Core is larger and centred, with
+  the ORVIX logotype and "Speak • Command • Get Results" chip beneath
+  it; the transcript panel stays directly below (the mockup has no
+  transcript, but the conversation is core functionality and is not
+  removed). Core state wiring is untouched.
+- **Quick Actions**: 2×3 icon grid (glyphs drawn with Canvas
+  primitives, no icon assets); tiles route the same command strings
+  as the old list buttons through `_send_text`. Downloads and System
+  Information remain as compact buttons under the grid.
+- **AI Model Status**: the configured model/endpoint (unchanged) plus
+  status lines from `model_status_lines` — ENDPOINT (configuration),
+  INTERNET ("Not checked"; the home page never probes the network),
+  AI CORE (live core mode), VOICE (real wake-word flag), TTS
+  (installed engine modules).
+- **Bottom command bar**: Voice Control (waveform strip, "Hey ORVIX"
+  wake-word pill, the existing wake-word toggle), the composer with a
+  big circular mic button and an "Ask me anything..." placeholder,
+  and Live Performance bars drawn from a rolling history of the real
+  CPU samples the gauge poll already takes (N/A until a readable
+  sample exists).
+- **Footer**: "Built with ❤ for a Smarter Tomorrow", the live core
+  mode + "Engineering Precision. Digital Innovation.", and a GitHub
+  link to the real repository.
+
+Layout note: the pack order in `_build_ui` is deliberate — top bar,
+footer and bottom bar are packed before the expanding body so the
+fixed strips always get their height. At the default 900 px window
+height the rails are dense: the lowest panels (Available tools on the
+left, AI Model Status / Permissions on the right) come fully into
+view as the window is maximised, the same packing behaviour the app
+has always had.
+
 ## What remains / honest limits
 
 - The full app *was* run under Xvfb on Linux for the overlay/HUD
