@@ -21,6 +21,7 @@ on machines where pywebview is not installed.
 """
 from __future__ import annotations
 
+import base64
 import collections
 import json
 import os
@@ -52,9 +53,12 @@ ENV_VAR = "ORVIX_WEBVIEW_HOME"
 # (for example a minimal embedding), so the web page still lists the
 # real three profiles — never an invented one.
 _FALLBACK_CHARACTERS = {
-    "luna": {"name": "LUNA", "role": "Calm strategy companion"},
-    "ruby": {"name": "RUBY", "role": "Confident action companion"},
-    "maya": {"name": "MAYA", "role": "Warm creative companion"},
+    "luna": {"name": "LUNA", "role": "Calm strategy companion",
+             "image": "luna.jpg"},
+    "ruby": {"name": "RUBY", "role": "Confident action companion",
+             "image": "ruby.jpg"},
+    "maya": {"name": "MAYA", "role": "Warm creative companion",
+             "image": "maya.jpg"},
 }
 
 
@@ -150,6 +154,68 @@ def _character_entries(app) -> list:
             role = ""
         entries.append({"key": str(key), "name": str(name), "role": str(role)})
     return entries
+
+
+def _portrait_roots(base_dir=None) -> list:
+    """Directories that may hold the character reference portraits.
+
+    Mirrors the desktop app's own discovery in
+    ``OrvixAssistant._prepare_avatar_images``: the app folder's
+    ``assets/characters/reference`` first, then any sibling app
+    folder's — the reference JPGs may still live in a sibling folder
+    whose move into this folder is a separate owner step, so the
+    sibling is discovered by glob, never named or assumed.
+    """
+    if base_dir is None:
+        base = Path(__file__).resolve().parent.parent
+    else:
+        base = Path(base_dir)
+    roots = [base / "assets" / "characters" / "reference"]
+    try:
+        siblings = sorted(base.parent.glob("*/assets/characters/reference"))
+    except Exception:
+        siblings = []
+    for sibling in siblings:
+        if sibling not in roots:
+            roots.append(sibling)
+    return roots
+
+
+def character_portrait_data_uris(characters=None, base_dir=None) -> dict:
+    """``{key: "data:image/jpeg;base64,..."}`` for the real portraits.
+
+    The web page cannot be relied on to reach the app's local asset
+    files (the WebView may serve the page away from the asset tree),
+    so the bridge injects the owner's own reference images as data
+    URIs on request. A character whose file is missing — or cannot
+    be read — is simply absent from the result: the page then keeps
+    its styled initial-letter art for that card. Nothing is invented
+    and no external URL is ever produced. Never raises.
+    """
+    if not isinstance(characters, dict) or not characters:
+        characters = _FALLBACK_CHARACTERS
+    roots = _portrait_roots(base_dir)
+    result = {}
+    for key, value in characters.items():
+        filename = value.get("image") if isinstance(value, dict) else None
+        if not filename:
+            continue
+        path = next(
+            (root / filename for root in roots
+             if (root / filename).is_file()),
+            None)
+        if path is None:
+            continue
+        try:
+            data = path.read_bytes()
+        except Exception:
+            continue
+        if not data:
+            continue
+        result[str(key)] = (
+            "data:image/jpeg;base64,"
+            + base64.b64encode(data).decode("ascii"))
+    return result
 
 
 # How many recent task records the payload carries. The web Tasks
@@ -337,6 +403,29 @@ class OrvixWebHomeApi:
                 return {"ok": False, "error": "unknown character"}
             self._enqueue("_select_character", (key,))
             return {"ok": True}
+        except Exception as exc:
+            return {"ok": False, "error": type(exc).__name__}
+
+    def getCharacterPortraits(self):
+        """One-shot portrait hand-off for the character cards.
+
+        Returns ``{"ok": True, "portraits": {key: data URI}}`` built
+        by :func:`character_portrait_data_uris` from the app's real
+        character definitions. The page calls this once after the
+        bridge connects and swaps each card's letter art for the
+        owner's actual reference image; keys absent from the result
+        keep the letter art. The lookup is cached on the API object —
+        the files do not change while the app runs. This is a pure
+        read of local files: nothing is enqueued and no Tk widget is
+        touched.
+        """
+        try:
+            portraits = getattr(self, "_portraits_cache", None)
+            if portraits is None:
+                characters = getattr(self.app, "characters", None)
+                portraits = character_portrait_data_uris(characters)
+                self._portraits_cache = portraits
+            return {"ok": True, "portraits": portraits}
         except Exception as exc:
             return {"ok": False, "error": type(exc).__name__}
 
@@ -625,6 +714,7 @@ __all__ = [
     "OrvixWebHomeApi",
     "WebViewHome",
     "build_state_payload",
+    "character_portrait_data_uris",
     "core_state_key",
     "webview_available",
     "webview_home_enabled",

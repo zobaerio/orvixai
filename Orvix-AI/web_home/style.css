@@ -79,3 +79,101 @@
    the payload reports webHomeAnimations off, app.js adds this class
    and every CSS animation/transition on the page is disabled. */
 body.no-animations *,body.no-animations *::before,body.no-animations *::after{animation:none!important;transition:none!important}
+
+/* ==========================================================================
+   Premium Phase 11 — home visual redesign (movie-HUD inspiration).
+   Visual layer only: palette aligned to the redesign spec, true
+   glassmorphism (translucent panels + backdrop blur + gradient neon
+   borders), an ambient background (grid, radial glows, canvas drift),
+   a richer hero reactor (tick ring, scanning sweep, orbit ring,
+   canvas particles — all tinted by the existing bridge-driven
+   data-state), portrait-ready character cards, an equalizer-style
+   Live Performance strip, and real responsive breakpoints. Every
+   rule here overrides the base rules above by source order; no
+   selector or hook used by earlier phases is removed.
+   ========================================================================== */
+:root{--bg:#030916;--panel:#07172B;--panel2:#0A2140;--primary:#008CFF;--cyan:#00DFFF;--secondary:#146BFF;--green:#00E88F;--text:#EAF6FF}
+
+/* Ambient background: fixed grid + radial glows under a canvas drift
+   layer (see app.js FX), with the app shell stacked above them. */
+body::before{content:"";position:fixed;inset:0;z-index:0;pointer-events:none;background-image:linear-gradient(rgba(11,133,201,.055) 1px,transparent 1px),linear-gradient(90deg,rgba(11,133,201,.055) 1px,transparent 1px);background-size:44px 44px;mask-image:radial-gradient(ellipse at 50% 28%,#000 25%,transparent 78%);-webkit-mask-image:radial-gradient(ellipse at 50% 28%,#000 25%,transparent 78%)}
+body::after{content:"";position:fixed;inset:0;z-index:0;pointer-events:none;background:radial-gradient(620px 380px at 16% -6%,rgba(0,140,255,.15),transparent 70%),radial-gradient(680px 420px at 85% -10%,rgba(0,223,255,.10),transparent 70%),radial-gradient(920px 620px at 50% 118%,rgba(20,107,255,.10),transparent 70%)}
+#bgCanvas{position:fixed;inset:0;z-index:0;pointer-events:none}
+.app-shell{position:relative;z-index:1}
+
+/* True glassmorphism: translucent fill over a blurred backdrop, a
+   gradient neon border (border-box layer) and a soft deep shadow. */
+.panel{background:linear-gradient(145deg,rgba(10,32,58,.66),rgba(4,13,26,.74)) padding-box,linear-gradient(150deg,rgba(0,223,255,.55),rgba(0,140,255,.10) 42%,rgba(20,107,255,.38)) border-box;border:1px solid transparent;backdrop-filter:blur(14px) saturate(150%);-webkit-backdrop-filter:blur(14px) saturate(150%);box-shadow:0 18px 42px rgba(0,4,12,.55),0 0 24px rgba(0,140,255,.12),inset 0 0 24px rgba(0,140,255,.05)}
+.notifications-panel{background:linear-gradient(145deg,rgba(10,32,58,.78),rgba(4,13,26,.85)) padding-box,linear-gradient(150deg,rgba(0,223,255,.55),rgba(0,140,255,.10) 42%,rgba(20,107,255,.38)) border-box;border:1px solid transparent;backdrop-filter:blur(14px) saturate(150%);-webkit-backdrop-filter:blur(14px) saturate(150%)}
+.topbar{background:linear-gradient(180deg,rgba(7,23,43,.78),rgba(7,23,43,.32));backdrop-filter:blur(12px) saturate(150%);-webkit-backdrop-filter:blur(12px) saturate(150%);border:1px solid rgba(0,191,255,.25);border-top:none;border-radius:0 0 16px 16px;padding:0 16px 12px}
+.toast{backdrop-filter:blur(10px);-webkit-backdrop-filter:blur(10px);background:rgba(6,42,69,.88)}
+
+/* Micro-interactions: smooth glows on nav, cards and buttons. */
+.nav-item{transition:color .25s ease,background .25s ease,border-color .25s ease,box-shadow .25s ease,text-shadow .25s ease}
+.nav-item.active{box-shadow:0 0 18px rgba(0,223,255,.45),inset 0 0 12px rgba(0,223,255,.18);text-shadow:0 0 9px rgba(0,223,255,.85)}
+.icon-button,.avatar-button,.mic-button,.send-button,.outline-button,.copy-button,.stop-speaking-button{transition:box-shadow .25s ease,background .25s ease,border-color .25s ease,transform .25s ease}
+.icon-button:hover,.avatar-button:hover{box-shadow:0 0 14px rgba(0,223,255,.5)}
+.mic-button:hover{box-shadow:0 0 22px rgba(0,223,255,.6)}
+.send-button:hover{box-shadow:0 0 24px rgba(0,223,255,.55)}
+.quick-action{background:linear-gradient(160deg,rgba(10,34,60,.72),rgba(5,17,33,.82));backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px)}
+button:focus-visible,a:focus-visible,input:focus-visible{outline:2px solid var(--cyan);outline-offset:2px}
+
+/* Hero reactor upgrade. --state carries the current core-state hue
+   (same hues as the ring tints above) for the new layers: tick ring,
+   scanning sweep, orbit ring, particle canvas and the status pill. */
+.reactor-wrap,.hero-status{--state:#00DFFF;--state-rgb:0,223,255}
+.reactor-wrap[data-state="listening"],.hero-status[data-state="listening"]{--state:#00E88F;--state-rgb:0,232,143}
+.reactor-wrap[data-state="thinking"],.hero-status[data-state="thinking"]{--state:#A78BFA;--state-rgb:167,139,250}
+.reactor-wrap[data-state="processing"],.hero-status[data-state="processing"]{--state:#FFB020;--state-rgb:255,176,32}
+.reactor-wrap[data-state="executing"],.hero-status[data-state="executing"]{--state:#38BDF8;--state-rgb:56,189,248}
+.reactor-wrap[data-state="speaking"],.hero-status[data-state="speaking"]{--state:#2DD4BF;--state-rgb:45,212,191}
+.reactor-wrap[data-state="completed"],.hero-status[data-state="completed"]{--state:#00E88F;--state-rgb:0,232,143}
+.reactor-wrap[data-state="error"],.hero-status[data-state="error"]{--state:#FF4D5E;--state-rgb:255,77,94}
+.reactor.ticks{inset:3.5%;border:none;background:repeating-conic-gradient(from 0deg,var(--state) 0deg 1.5deg,transparent 1.5deg 12deg);-webkit-mask:radial-gradient(farthest-side,transparent calc(100% - 10px),#000 calc(100% - 9px));mask:radial-gradient(farthest-side,transparent calc(100% - 10px),#000 calc(100% - 9px));opacity:.5;animation:spinRev 48s linear infinite}
+.reactor.sweep{inset:6.5%;border:none;background:conic-gradient(from 0deg,rgba(var(--state-rgb),.30),transparent 24%);mix-blend-mode:screen;animation:spin 7s linear infinite}
+.reactor.orbit{inset:auto;left:-15%;top:27%;width:130%;height:46%;border:1px solid rgba(var(--state-rgb),.45);box-shadow:0 0 14px rgba(var(--state-rgb),.22);animation:orbitSway 9s ease-in-out infinite alternate}
+.reactor.orbit i{position:absolute;right:5.5%;top:-4px;width:8px;height:8px;border-radius:50%;background:var(--state);box-shadow:0 0 12px var(--state)}
+.reactor-particles{position:absolute;inset:0;width:100%;height:100%;pointer-events:none}
+@keyframes spinRev{to{transform:rotate(-360deg)}}
+@keyframes orbitSway{from{transform:rotate(-17deg)}to{transform:rotate(-9deg)}}
+@keyframes corePulse{from{transform:scaleX(1.08) scale(1)}to{transform:scaleX(1.08) scale(1.07)}}
+.reactor-wrap[data-state="listening"] .outer,.reactor-wrap[data-state="listening"] .sweep{animation-duration:5.5s}
+.reactor-wrap[data-state="thinking"] .outer{animation-duration:4.5s}
+.reactor-wrap[data-state="thinking"] .middle{animation-duration:3.2s}
+.reactor-wrap[data-state="executing"] .sweep{animation-duration:3.4s}
+.reactor-wrap[data-state="speaking"] .core-logo{animation:corePulse 1.1s ease-in-out infinite alternate}
+.hero-status{display:flex;align-items:center;gap:9px;margin-top:15px;padding:8px 20px;border:1px solid rgba(var(--state-rgb),.55);border-radius:30px;background:rgba(4,24,44,.55);box-shadow:0 0 16px rgba(var(--state-rgb),.25);font:700 11px Rajdhani,sans-serif;letter-spacing:3px;color:var(--state)}
+.hero-status .pulse-dot{background:var(--state);box-shadow:0 0 12px var(--state)}
+
+/* Character cards: portrait-ready art area. When the bridge supplies
+   the real portrait it fills the art area (object-fit cover); the
+   initial letter stays underneath as the fallback. */
+.character{transition:transform .25s ease,border-color .25s ease,box-shadow .25s ease,background .25s ease}
+.character:hover{transform:translateY(-3px)}
+.character small{white-space:normal;text-align:center;line-height:1.35}
+.character-art{position:relative;overflow:hidden;height:104px}
+.character-photo{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;display:block}
+
+/* Voice nav focus flash: a brief neon outline pulse on the Voice
+   Control panel after the Voice nav item scrolls it into view. */
+@keyframes focusFlash{0%,100%{box-shadow:0 18px 42px rgba(0,4,12,.55)}25%,65%{box-shadow:0 0 0 2px var(--cyan),0 0 36px rgba(0,223,255,.55)}}
+.voice-panel.focus-flash{animation:focusFlash 1.2s ease-in-out 2}
+
+/* Live Performance as an equalizer: each column is a pair of real
+   samples — RAM behind (secondary blue, translucent), CPU in front
+   (bright cyan gradient, narrower) — heights set by app.js from the
+   pushed history only. */
+.performance-chart span{position:relative;height:100%;background:none;box-shadow:none;border-radius:0}
+.performance-chart span i{position:absolute;bottom:0;border-radius:3px 3px 0 0;transition:height .45s ease}
+.performance-chart span .ram-bar{left:0;right:0;background:linear-gradient(0deg,rgba(20,107,255,.30),rgba(20,107,255,.62))}
+.performance-chart span .cpu-bar{left:22%;right:22%;background:linear-gradient(0deg,#008CFF,#00DFFF);box-shadow:0 0 8px rgba(0,223,255,.5);z-index:2}
+.perf-legend{display:flex;align-items:center;gap:5px}
+.perf-dot{width:8px;height:8px;border-radius:2px;display:inline-block}
+.perf-dot.cpu{background:#00DFFF;box-shadow:0 0 7px rgba(0,223,255,.7)}
+.perf-dot.ram{background:#146BFF;box-shadow:0 0 7px rgba(20,107,255,.7)}
+
+/* Responsive: real rearrangement, not a shrink. Wide laptops keep
+   three columns; at 1250px the right rail drops below as a 3-up
+   grid; at 900px everything stacks in reading order (core first). */
+@media(max-width:1250px){.dashboard{grid-template-columns:295px minmax(430px,1fr)}.right-column{grid-column:1/-1;display:grid;grid-template-columns:repeat(3,1fr);align-items:start}.brand{min-width:228px}.nav-item{padding:11px 12px}.clock{min-width:112px}}
+@media(max-width:900px){.app-shell{padding:10px;gap:10px}.topbar{height:auto;flex-wrap:wrap;padding:6px 10px 12px}.brand{min-width:0;flex:1}.brand-mark{width:44px;height:44px;font-size:25px}.brand-copy strong{font-size:24px}.main-nav{order:3;flex-basis:100%;justify-content:space-between;flex-wrap:wrap}.nav-item{padding:9px 11px;font-size:12px}.dashboard{display:flex;flex-direction:column}.center-column{order:0}.left-column{order:1;display:flex}.right-column{order:2;display:flex}.hero{min-height:340px}.reactor-wrap{width:200px}.core-logo{font-size:80px}.hero h1{font-size:48px}.footer{flex-wrap:wrap;gap:8px}}
