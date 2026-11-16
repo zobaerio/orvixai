@@ -16,7 +16,7 @@ from typing import Callable
 
 from orvix.agent import OrvixAgent
 from orvix.task_planner import classify_plan_step_kind, format_plan_guidance, generate_task_plan, should_generate_task_plan
-from orvix.settings import auto_configure_from_api_key, get_api_key, load_settings, save_settings, set_api_key, test_api_connection, validate_api_base_url, validate_api_key_transport, validate_speech_rate, validate_speech_volume, validate_wake_phrase
+from orvix.settings import VOICE_IDS, auto_configure_from_api_key, effective_voice, get_api_key, load_settings, save_settings, set_api_key, test_api_connection, validate_api_base_url, validate_api_key_transport, validate_speech_rate, validate_speech_volume, validate_voice_id, validate_wake_phrase
 from orvix.speech import SpeechEngine, match_wake_phrase
 from orvix.core_states import CoreState
 from orvix.floating_core import FloatingCoreWidget
@@ -1481,12 +1481,16 @@ class OrvixDesktop:
             return
         self.selected_character = key
         self.settings["selected_character"] = key
-        self.settings["voice"] = self.characters[key]["voice"]
+        # Bug #10 fix: selecting a character must NOT overwrite the
+        # user's voice settings. The spoken voice now resolves per
+        # character at speak time (effective_voice: the character's
+        # own Settings > Character voice, falling back to the global
+        # Voice-tab voice); only the selection itself is persisted.
         save_settings(self.settings)
         self._refresh_character_cards()
         self._render_core()
         if hasattr(self, "chat"):
-            self._write_message("SYSTEM", f"Assistant character changed to {self.characters[key]['name']}. Visual profile and preferred voice updated. Change language/voice in Settings anytime.", "system")
+            self._write_message("SYSTEM", f"Assistant character changed to {self.characters[key]['name']}. Visual profile updated. Each character's voice can be changed in Settings > Character.", "system")
 
     def _push_activity(self, text: str) -> None:
         clean = " ".join(str(text).split())
@@ -3024,7 +3028,7 @@ class OrvixDesktop:
                     pass
                 self.speech.speak(
                     text,
-                    str(self.settings.get("voice", "bn-BD-PradeepNeural")),
+                    effective_voice(self.settings),
                     barge_in=bool(self.settings.get("voice_barge_in", True)),
                     rate=str(self.settings.get("speech_rate", "+0%")),
                     volume=str(self.settings.get("speech_volume", "+0%")),
@@ -3503,34 +3507,59 @@ class OrvixDesktop:
     def _open_settings(self) -> None:
         win = tk.Toplevel(self.root)
         win.title("ORVIX Settings")
-        win.geometry("600x780")
+        win.geometry("640x820")
         win.resizable(False, False)
         win.configure(bg=BG)
         win.transient(self.root)
         win.grab_set()
-        pad = tk.Frame(win, bg=BG)
-        pad.pack(fill="both", expand=True, padx=24, pady=22)
-        tk.Label(pad, text="AI & Voice Settings", bg=BG, fg=TEXT, font=("Segoe UI Semibold", 18, "bold")).pack(anchor="w")
-        tk.Label(pad, text="Local Ollama or any OpenAI-compatible API endpoint can be used.", bg=BG, fg=MUTED, font=("Segoe UI", 9)).pack(anchor="w", pady=(5, 10))
+        header = tk.Frame(win, bg=BG)
+        header.pack(fill="x", padx=24, pady=(18, 0))
+        tk.Label(header, text="ORVIX Settings", bg=BG, fg=TEXT, font=("Segoe UI Semibold", 18, "bold")).pack(anchor="w")
+        tk.Label(header, text="Settings are grouped by topic below. Save Settings applies every tab at once; Cancel discards all changes.", bg=BG, fg=MUTED, font=("Segoe UI", 9), wraplength=560, justify="left").pack(anchor="w", pady=(5, 8))
+
+        notebook = ttk.Notebook(win)
+        notebook.pack(fill="both", expand=True, padx=24, pady=(4, 0))
+
+        def _settings_tab(title: str) -> tk.Frame:
+            frame = tk.Frame(notebook, bg=BG)
+            notebook.add(frame, text=title)
+            inner = tk.Frame(frame, bg=BG)
+            inner.pack(fill="both", expand=True, padx=16, pady=14)
+            return inner
+
+        general_tab = _settings_tab("General")
+        ai_model_tab = _settings_tab("AI Model")
+        voice_tab = _settings_tab("Voice")
+        character_tab = _settings_tab("Character")
+        appearance_tab = _settings_tab("Appearance")
+        startup_tab = _settings_tab("Startup")
+        permissions_tab = _settings_tab("Permissions")
+        notifications_tab = _settings_tab("Notifications")
+        privacy_tab = _settings_tab("Privacy")
+        about_tab = _settings_tab("About")
+
+        footer = tk.Frame(win, bg=BG)
+        footer.pack(fill="x", padx=24, pady=(10, 16))
 
         variables: dict[str, tk.StringVar] = {}
         fields = [
             ("API base URL", "api_base_url", "http://localhost:11434/v1"),
             ("Model name", "model", "qwen2.5:3b"),
         ]
+        tk.Label(ai_model_tab, text="Local Ollama or any OpenAI-compatible API endpoint can be used.", bg=BG, fg=MUTED, font=("Segoe UI", 9), wraplength=540, justify="left").pack(anchor="w", pady=(0, 6))
         for label, key, placeholder in fields:
-            tk.Label(pad, text=label, bg=BG, fg="#cbd7e8", font=("Segoe UI Semibold", 9)).pack(anchor="w", pady=(6, 5))
+            tk.Label(ai_model_tab, text=label, bg=BG, fg="#cbd7e8", font=("Segoe UI Semibold", 9)).pack(anchor="w", pady=(6, 5))
             var = tk.StringVar(value=str(self.settings.get(key, placeholder)))
             variables[key] = var
-            ttk.Entry(pad, textvariable=var).pack(fill="x", ipady=4)
+            ttk.Entry(ai_model_tab, textvariable=var).pack(fill="x", ipady=4)
 
-        tk.Label(pad, text="API key (stored in Windows Credential Manager; blank for local Ollama)", bg=BG, fg="#cbd7e8", font=("Segoe UI Semibold", 9)).pack(anchor="w", pady=(12, 5))
+        tk.Label(ai_model_tab, text="API key (stored in Windows Credential Manager; blank for local Ollama)", bg=BG, fg="#cbd7e8", font=("Segoe UI Semibold", 9)).pack(anchor="w", pady=(12, 5))
         key_var = tk.StringVar(value=get_api_key())
-        key_entry = ttk.Entry(pad, textvariable=key_var, show="•")
+        key_entry = ttk.Entry(ai_model_tab, textvariable=key_var, show="•")
         key_entry.pack(fill="x", ipady=4)
 
         auto_setup_status = tk.Label(
-            pad,
+            ai_model_tab,
             text="Quick setup supports recognizable OpenRouter, OpenAI project/service-account, Groq, Google Gemini and xAI keys. Generic 'sk-' keys are not guessed.",
             bg=BG, fg=MUTED, font=("Segoe UI", 8), wraplength=540, justify="left",
         )
@@ -3634,39 +3663,39 @@ class OrvixDesktop:
 
             threading.Thread(target=worker, daemon=True).start()
 
-        auto_setup_button = ttk.Button(pad, text="AUTO SETUP FROM API KEY", command=auto_setup)
+        auto_setup_button = ttk.Button(ai_model_tab, text="AUTO SETUP FROM API KEY", command=auto_setup)
         auto_setup_button.pack(anchor="w", pady=(4, 4))
 
-        tk.Label(pad, text="Speech recognition language", bg=BG, fg="#cbd7e8", font=("Segoe UI Semibold", 9)).pack(anchor="w", pady=(12, 5))
+        tk.Label(voice_tab, text="Speech recognition language", bg=BG, fg="#cbd7e8", font=("Segoe UI Semibold", 9)).pack(anchor="w", pady=(12, 5))
         lang_var = tk.StringVar(value=str(self.settings.get("speech_language", "bn-BD")))
-        lang_combo = ttk.Combobox(pad, textvariable=lang_var, state="readonly", values=["bn-BD", "en-US", "en-GB", "hi-IN"])
+        lang_combo = ttk.Combobox(voice_tab, textvariable=lang_var, state="readonly", values=["bn-BD", "en-US", "en-GB", "hi-IN"])
         lang_combo.pack(fill="x")
 
-        tk.Label(pad, text="Spoken reply voice", bg=BG, fg="#cbd7e8", font=("Segoe UI Semibold", 9)).pack(anchor="w", pady=(12, 5))
+        tk.Label(voice_tab, text="Spoken reply voice", bg=BG, fg="#cbd7e8", font=("Segoe UI Semibold", 9)).pack(anchor="w", pady=(12, 5))
         voice_var = tk.StringVar(value=str(self.settings.get("voice", "bn-BD-PradeepNeural")))
-        voice_combo = ttk.Combobox(pad, textvariable=voice_var, state="readonly", values=["bn-BD-PradeepNeural", "bn-BD-NabanitaNeural", "en-US-GuyNeural", "en-US-JennyNeural", "en-GB-RyanNeural", "en-GB-SoniaNeural"])
+        voice_combo = ttk.Combobox(voice_tab, textvariable=voice_var, state="readonly", values=list(VOICE_IDS))
         voice_combo.pack(fill="x")
 
         speak_var = tk.BooleanVar(value=bool(self.settings.get("speak_replies", True)))
-        tk.Checkbutton(pad, text="Speak assistant replies aloud (internet required for neural voice)", variable=speak_var, bg=BG, fg=TEXT, activebackground=BG, activeforeground=TEXT, selectcolor=CARD, font=("Segoe UI", 9)).pack(anchor="w", pady=(10, 6))
+        tk.Checkbutton(voice_tab, text="Speak assistant replies aloud (internet required for neural voice)", variable=speak_var, bg=BG, fg=TEXT, activebackground=BG, activeforeground=TEXT, selectcolor=CARD, font=("Segoe UI", 9)).pack(anchor="w", pady=(10, 6))
 
-        tk.Label(pad, text="Speech rate (neural voice)", bg=BG, fg="#cbd7e8", font=("Segoe UI Semibold", 9)).pack(anchor="w", pady=(6, 5))
+        tk.Label(voice_tab, text="Speech rate (neural voice)", bg=BG, fg="#cbd7e8", font=("Segoe UI Semibold", 9)).pack(anchor="w", pady=(6, 5))
         rate_var = tk.StringVar(value=str(self.settings.get("speech_rate", "+0%")))
-        rate_combo = ttk.Combobox(pad, textvariable=rate_var, state="readonly", values=["-50%", "-25%", "-10%", "+0%", "+10%", "+25%", "+50%", "+100%"])
+        rate_combo = ttk.Combobox(voice_tab, textvariable=rate_var, state="readonly", values=["-50%", "-25%", "-10%", "+0%", "+10%", "+25%", "+50%", "+100%"])
         rate_combo.pack(fill="x")
 
-        tk.Label(pad, text="Speech volume (neural voice)", bg=BG, fg="#cbd7e8", font=("Segoe UI Semibold", 9)).pack(anchor="w", pady=(12, 5))
+        tk.Label(voice_tab, text="Speech volume (neural voice)", bg=BG, fg="#cbd7e8", font=("Segoe UI Semibold", 9)).pack(anchor="w", pady=(12, 5))
         volume_var = tk.StringVar(value=str(self.settings.get("speech_volume", "+0%")))
-        volume_combo = ttk.Combobox(pad, textvariable=volume_var, state="readonly", values=["-100%", "-50%", "-25%", "+0%", "+25%", "+50%", "+100%"])
+        volume_combo = ttk.Combobox(voice_tab, textvariable=volume_var, state="readonly", values=["-100%", "-50%", "-25%", "+0%", "+25%", "+50%", "+100%"])
         volume_combo.pack(fill="x")
 
-        tk.Label(pad, text="Wake phrase (the phrase that activates wake-word listening)", bg=BG, fg="#cbd7e8", font=("Segoe UI Semibold", 9)).pack(anchor="w", pady=(12, 5))
+        tk.Label(voice_tab, text="Wake phrase (the phrase that activates wake-word listening)", bg=BG, fg="#cbd7e8", font=("Segoe UI Semibold", 9)).pack(anchor="w", pady=(12, 5))
         wake_var = tk.StringVar(value=str(self.settings.get("wake_phrase", "hey orvix")))
-        ttk.Entry(pad, textvariable=wake_var).pack(fill="x", ipady=4)
+        ttk.Entry(voice_tab, textvariable=wake_var).pack(fill="x", ipady=4)
 
         startup_var = tk.BooleanVar(value=is_windows_startup_enabled())
         tk.Checkbutton(
-            pad,
+            startup_tab,
             text="Start ORVIX automatically when I sign in to Windows (optional)",
             variable=startup_var, bg=BG, fg=TEXT, activebackground=BG,
             activeforeground=TEXT, selectcolor=CARD, font=("Segoe UI", 9),
@@ -3674,96 +3703,157 @@ class OrvixDesktop:
 
         brain_var = tk.BooleanVar(value=bool(self.settings.get("autonomous_brain", False)))
         tk.Checkbutton(
-            pad,
+            general_tab,
             text="Autonomous Brain (multi-agent) for complex commands",
             variable=brain_var, bg=BG, fg=TEXT, activebackground=BG,
             activeforeground=TEXT, selectcolor=CARD, font=("Segoe UI", 9),
         ).pack(anchor="w", pady=(0, 2))
         tk.Label(
-            pad,
-            text="When on, complex multi-step commands are planned and run by the Chief Intelligence Agent and its specialised agents using the endpoint above. Simple commands are unchanged. Desktop actions still ask for approval. Off by default.",
+            general_tab,
+            text="When on, complex multi-step commands are planned and run by the Chief Intelligence Agent and its specialised agents using the endpoint configured in the AI Model tab. Simple commands are unchanged. Desktop actions still ask for approval. Off by default.",
             bg=BG, fg=MUTED, font=("Segoe UI", 8), wraplength=540, justify="left",
         ).pack(fill="x", pady=(0, 6))
         webview_var = tk.BooleanVar(value=bool(self.settings.get("webview_home", True)))
         tk.Checkbutton(
-            pad,
+            general_tab,
             text="WebView Home — open the HTML home window at startup",
             variable=webview_var, bg=BG, fg=TEXT, activebackground=BG,
             activeforeground=TEXT, selectcolor=CARD, font=("Segoe UI", 9),
         ).pack(anchor="w", pady=(0, 2))
         tk.Label(
-            pad,
+            general_tab,
             text="The HTML home mirrors this console: same commands, same brain, live system data. If the WebView component is unavailable, ORVIX opens this console window exactly as before. Takes effect next launch; ORVIX_WEBVIEW_HOME=0 forces the console.",
             bg=BG, fg=MUTED, font=("Segoe UI", 8), wraplength=540, justify="left",
         ).pack(fill="x", pady=(0, 6))
         vad_var = tk.BooleanVar(value=bool(self.settings.get("voice_vad_enabled", True)))
         tk.Checkbutton(
-            pad,
+            voice_tab,
             text="Voice activity detection — listening starts/stops with your speech",
             variable=vad_var, bg=BG, fg=TEXT, activebackground=BG,
             activeforeground=TEXT, selectcolor=CARD, font=("Segoe UI", 9),
         ).pack(anchor="w", pady=(0, 2))
         barge_var = tk.BooleanVar(value=bool(self.settings.get("voice_barge_in", True)))
         tk.Checkbutton(
-            pad,
+            voice_tab,
             text="Barge-in — interrupt a spoken reply by speaking (neural voice)",
             variable=barge_var, bg=BG, fg=TEXT, activebackground=BG,
             activeforeground=TEXT, selectcolor=CARD, font=("Segoe UI", 9),
         ).pack(anchor="w", pady=(0, 2))
         tk.Label(
-            pad,
+            voice_tab,
             text="Voice activity detection segments speech on this PC and falls back to the classic listener automatically if capture fails. Barge-in monitors the microphone while ORVIX speaks; speaker echo can mask it, so headphones work best. The offline fallback voice cannot be interrupted.",
             bg=BG, fg=MUTED, font=("Segoe UI", 8), wraplength=540, justify="left",
         ).pack(fill="x", pady=(0, 6))
 
-        tk.Label(pad, text="Notifications", bg=BG, fg="#cbd7e8", font=("Segoe UI Semibold", 9)).pack(anchor="w", pady=(6, 5))
+        tk.Label(notifications_tab, text="Notifications", bg=BG, fg="#cbd7e8", font=("Segoe UI Semibold", 9)).pack(anchor="w", pady=(6, 5))
         notify_task_completed_var = tk.BooleanVar(value=bool(self.settings.get("notify_task_completed", True)))
         tk.Checkbutton(
-            pad,
+            notifications_tab,
             text="Notify when a task completes",
             variable=notify_task_completed_var, bg=BG, fg=TEXT, activebackground=BG,
             activeforeground=TEXT, selectcolor=CARD, font=("Segoe UI", 9),
         ).pack(anchor="w", pady=(0, 2))
         notify_task_failed_var = tk.BooleanVar(value=bool(self.settings.get("notify_task_failed", True)))
         tk.Checkbutton(
-            pad,
+            notifications_tab,
             text="Notify when a task fails",
             variable=notify_task_failed_var, bg=BG, fg=TEXT, activebackground=BG,
             activeforeground=TEXT, selectcolor=CARD, font=("Segoe UI", 9),
         ).pack(anchor="w", pady=(0, 2))
         notify_endpoint_health_var = tk.BooleanVar(value=bool(self.settings.get("notify_endpoint_health", True)))
         tk.Checkbutton(
-            pad,
+            notifications_tab,
             text="Notify with endpoint health results (connection test)",
             variable=notify_endpoint_health_var, bg=BG, fg=TEXT, activebackground=BG,
             activeforeground=TEXT, selectcolor=CARD, font=("Segoe UI", 9),
         ).pack(anchor="w", pady=(0, 2))
         notify_wake_var = tk.BooleanVar(value=bool(self.settings.get("notify_wake_activation", True)))
         tk.Checkbutton(
-            pad,
+            notifications_tab,
             text="Notify when the wake phrase activates ORVIX",
             variable=notify_wake_var, bg=BG, fg=TEXT, activebackground=BG,
             activeforeground=TEXT, selectcolor=CARD, font=("Segoe UI", 9),
         ).pack(anchor="w", pady=(0, 2))
         tk.Label(
-            pad,
+            notifications_tab,
             text="Native notifications are shown by the system tray while ORVIX runs in background mode. They are on by default and each type can be switched off here. The in-app messages always remain, whether a notification is sent or not.",
             bg=BG, fg=MUTED, font=("Segoe UI", 8), wraplength=540, justify="left",
         ).pack(fill="x", pady=(0, 6))
 
+        # -- Character tab: per-character voices (Phase 7) ----------
+        tk.Label(character_tab, text="Each character can speak with its own voice, chosen from the same voices as the global Voice tab. The global Voice-tab voice remains the fallback whenever a character has no valid voice of its own.", bg=BG, fg=MUTED, font=("Segoe UI", 8), wraplength=540, justify="left").pack(fill="x", pady=(0, 6))
+        character_voice_vars: dict[str, tk.StringVar] = {}
+        for char_key, char_label in (("luna", "LUNA"), ("ruby", "RUBY"), ("maya", "MAYA")):
+            tk.Label(character_tab, text=f"{char_label} voice", bg=BG, fg="#cbd7e8", font=("Segoe UI Semibold", 9)).pack(anchor="w", pady=(6, 5))
+            char_voice_var = tk.StringVar(value=str(self.settings.get(f"character_voice_{char_key}", self.settings.get("voice", "bn-BD-NabanitaNeural"))))
+            character_voice_vars[char_key] = char_voice_var
+            ttk.Combobox(character_tab, textvariable=char_voice_var, state="readonly", values=list(VOICE_IDS)).pack(fill="x")
+
+        # -- Appearance tab: web-home animations toggle (Phase 7) ----
+        animations_var = tk.BooleanVar(value=bool(self.settings.get("web_home_animations", True)))
+        tk.Checkbutton(
+            appearance_tab,
+            text="Web home animations — animate the HTML home window",
+            variable=animations_var, bg=BG, fg=TEXT, activebackground=BG,
+            activeforeground=TEXT, selectcolor=CARD, font=("Segoe UI", 9),
+        ).pack(anchor="w", pady=(0, 2))
+        tk.Label(
+            appearance_tab,
+            text="When off, the HTML home window disables its CSS animations and transitions. On by default; takes effect when the home window next receives a state update.",
+            bg=BG, fg=MUTED, font=("Segoe UI", 8), wraplength=540, justify="left",
+        ).pack(fill="x", pady=(0, 6))
+
+        # -- Startup tab note (the sign-in checkbox itself is above) --
+        tk.Label(
+            startup_tab,
+            text="Saving applies the Windows sign-in registration right away; if the registration fails, your previously saved preference is kept instead.",
+            bg=BG, fg=MUTED, font=("Segoe UI", 8), wraplength=540, justify="left",
+        ).pack(fill="x", pady=(0, 6))
+
+        # -- Permissions tab: read-only review of the built-in gates --
+        tk.Label(
+            permissions_tab,
+            text=(
+                "How ORVIX gates desktop actions (summary only — these safeguards are built in; they are not toggles):\n"
+                "• Desktop actions ask for your approval in a per-action dialog before they run.\n"
+                "• File operations are restricted to your Desktop, Documents and Downloads folders.\n"
+                "• Deleting a file moves it to the Recycle Bin only — ORVIX never permanently deletes a file.\n"
+                "• Power actions are gated: lock is immediate, while restart and shutdown run only after the confirmation gate and its countdown."
+            ),
+            bg=BG, fg=TEXT, font=("Segoe UI", 9), wraplength=540, justify="left",
+        ).pack(fill="x")
+
+        # -- Privacy tab: read-only summary of real behaviours --------
+        tk.Label(
+            privacy_tab,
+            text=(
+                "How ORVIX handles your data (summary only):\n"
+                "• Your API key is stored only in the OS keyring (Windows Credential Manager), never in the settings file.\n"
+                "• API keys are refused over remote plain HTTP — a non-local endpoint must use HTTPS; local endpoints are exempt.\n"
+                "• ORVIX asks for your consent before reading file contents, and warns that the contents may be sent to your configured AI provider.\n"
+                "• The diagnostics export is privacy-safe: counts, status and timing metadata only — no file contents and no credentials."
+            ),
+            bg=BG, fg=TEXT, font=("Segoe UI", 9), wraplength=540, justify="left",
+        ).pack(fill="x")
+
+        # -- About tab: the same facts as the About dialog ------------
+        tk.Label(about_tab, text=f"{APP_NAME} — AI Agent Assistant", bg=BG, fg=TEXT, font=("Segoe UI Semibold", 13, "bold")).pack(anchor="w")
+        tk.Label(about_tab, text=f"Version {APP_VERSION}", bg=BG, fg=MUTED, font=("Segoe UI", 9)).pack(anchor="w", pady=(4, 2))
+        tk.Label(about_tab, text="Repository: https://github.com/zobaerio/orvixai", bg=BG, fg=MUTED, font=("Segoe UI", 9)).pack(anchor="w")
+
         connection_status = tk.Label(
-            pad, text="Connection not tested yet.", bg=BG, fg=MUTED,
+            ai_model_tab, text="Connection not tested yet.", bg=BG, fg=MUTED,
             font=("Segoe UI", 9), justify="left", wraplength=540,
         )
         connection_status.pack(fill="x", pady=(0, 6))
         tk.Label(
-            pad,
+            ai_model_tab,
             text="Test Connection requests /models only; it does not send a chat prompt or generate an answer.",
             bg=BG, fg=MUTED, font=("Segoe UI", 8), wraplength=540, justify="left",
         ).pack(fill="x", pady=(0, 4))
 
-        buttons = tk.Frame(pad, bg=BG)
-        buttons.pack(fill="x", side="bottom", pady=(12, 0))
+        buttons = tk.Frame(footer, bg=BG)
+        buttons.pack(fill="x")
         test_button = ttk.Button(buttons, text="Test Connection")
 
         def show_connection_result(result: dict) -> None:
@@ -3817,10 +3907,16 @@ class OrvixDesktop:
             new["notify_task_failed"] = bool(notify_task_failed_var.get())
             new["notify_endpoint_health"] = bool(notify_endpoint_health_var.get())
             new["notify_wake_activation"] = bool(notify_wake_var.get())
+            new["character_voice_luna"] = character_voice_vars["luna"].get()
+            new["character_voice_ruby"] = character_voice_vars["ruby"].get()
+            new["character_voice_maya"] = character_voice_vars["maya"].get()
+            new["web_home_animations"] = bool(animations_var.get())
             try:
                 new["speech_rate"] = validate_speech_rate(rate_var.get())
                 new["speech_volume"] = validate_speech_volume(volume_var.get())
                 new["wake_phrase"] = validate_wake_phrase(wake_var.get())
+                for char_key in ("luna", "ruby", "maya"):
+                    new[f"character_voice_{char_key}"] = validate_voice_id(new[f"character_voice_{char_key}"])
                 new["api_base_url"] = validate_api_base_url(new["api_base_url"])
                 if not new["model"]:
                     raise ValueError("Model name cannot be empty.")

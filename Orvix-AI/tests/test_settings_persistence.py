@@ -101,6 +101,37 @@ class DurableSettingsTests(unittest.TestCase):
                 stored = json.loads(self.primary.read_text(encoding="utf-8"))
                 self.assertEqual(stored["webview_home"], value)
 
+    def test_phase7_new_keys_round_trip(self) -> None:
+        # Premium Phase 7: per-character voices and the web-home
+        # animations toggle are allow-listed DEFAULTS keys whose
+        # values survive save/load exactly.
+        self.assertEqual(settings.DEFAULTS["character_voice_luna"], settings.DEFAULTS["voice"])
+        self.assertEqual(settings.DEFAULTS["character_voice_ruby"], settings.DEFAULTS["voice"])
+        self.assertEqual(settings.DEFAULTS["character_voice_maya"], settings.DEFAULTS["voice"])
+        self.assertIs(settings.DEFAULTS["web_home_animations"], True)
+        customised = {
+            "character_voice_luna": "en-US-JennyNeural",
+            "character_voice_ruby": "en-GB-RyanNeural",
+            "character_voice_maya": "bn-BD-PradeepNeural",
+            "web_home_animations": False,
+        }
+        settings.save_settings({**settings.DEFAULTS, **customised})
+        loaded = settings.load_settings()
+        for key, value in customised.items():
+            self.assertEqual(loaded[key], value, key)
+        stored = json.loads(self.primary.read_text(encoding="utf-8"))
+        for key, value in customised.items():
+            self.assertEqual(stored[key], value, key)
+
+    def test_every_default_key_still_round_trips(self) -> None:
+        # Per-category sanity after the Phase 7 tabbed-settings
+        # restructure: every previously persisted key (they are all
+        # DEFAULTS keys) still survives a save/load round-trip.
+        settings.save_settings(dict(settings.DEFAULTS))
+        self.assertEqual(settings.load_settings(), settings.DEFAULTS)
+        stored = json.loads(self.primary.read_text(encoding="utf-8"))
+        self.assertEqual(set(stored), set(settings.DEFAULTS))
+
     def test_floating_hud_preferences_survive_save_and_load(self) -> None:
         preferences = {
             "floating_hud_x": 310,

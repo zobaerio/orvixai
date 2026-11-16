@@ -90,7 +90,82 @@ DEFAULTS: dict[str, Any] = {
     "notify_task_failed": True,
     "notify_endpoint_health": True,
     "notify_wake_activation": True,
+    # Per-character voices (Premium Phase 7): each character may use
+    # its own spoken-reply voice, chosen in Settings > Character from
+    # the same VOICE_IDS list as the global voice. Every default is
+    # the identifier all characters ship with today, so existing
+    # behaviour is unchanged until the user picks a different voice
+    # for a character. The global "voice" stays the fallback (see
+    # effective_voice).
+    "character_voice_luna": "bn-BD-NabanitaNeural",
+    "character_voice_ruby": "bn-BD-NabanitaNeural",
+    "character_voice_maya": "bn-BD-NabanitaNeural",
+    # Web-home animations (Premium Phase 7, Settings > Appearance):
+    # True (the default) keeps the HTML home page's CSS animations
+    # and transitions exactly as before; False is carried in the
+    # bridge state payload and the page disables them.
+    "web_home_animations": True,
 }
+
+# The spoken-reply voice identifiers offered by the Settings voice
+# combos — the single source for the global Voice-tab combo and the
+# per-character Character-tab combos. No other identifier is valid
+# for any of them (see validate_voice_id).
+VOICE_IDS: tuple[str, ...] = (
+    "bn-BD-PradeepNeural",
+    "bn-BD-NabanitaNeural",
+    "en-US-GuyNeural",
+    "en-US-JennyNeural",
+    "en-GB-RyanNeural",
+    "en-GB-SoniaNeural",
+)
+
+# Settings key holding each character's own voice.
+CHARACTER_VOICE_KEYS: dict[str, str] = {
+    "luna": "character_voice_luna",
+    "ruby": "character_voice_ruby",
+    "maya": "character_voice_maya",
+}
+
+
+def validate_voice_id(value: str) -> str:
+    """Validate a voice identifier against the Settings combo list.
+
+    Only identifiers in :data:`VOICE_IDS` — the exact list the
+    Settings combos offer — are accepted, for the global voice and
+    for every per-character voice alike.
+    """
+    text = str(value or "").strip()
+    if text not in VOICE_IDS:
+        raise ValueError(
+            "Voice must be one of the voices offered in Settings: "
+            + ", ".join(VOICE_IDS) + "."
+        )
+    return text
+
+
+def effective_voice(settings: dict[str, Any] | None, character: str | None = None) -> str:
+    """Resolve the voice that should speak for the selected character.
+
+    The character's own configured voice (``character_voice_<key>``)
+    wins when it holds a valid identifier; otherwise the global
+    ``voice`` setting is the fallback — including for an unknown
+    character key. ``character`` defaults to the settings'
+    ``selected_character``. A missing/invalid per-character value
+    never raises: existing saved settings predate the per-character
+    keys and must keep working.
+    """
+    data = settings if isinstance(settings, dict) else {}
+    key = character if character is not None else data.get("selected_character", "luna")
+    settings_key = CHARACTER_VOICE_KEYS.get(str(key or "").strip().lower())
+    if settings_key is not None:
+        candidate = data.get(settings_key)
+        if isinstance(candidate, str) and candidate in VOICE_IDS:
+            return candidate
+    fallback = data.get("voice")
+    if isinstance(fallback, str) and fallback.strip():
+        return fallback
+    return str(DEFAULTS["voice"])
 
 
 LOCAL_API_HOSTS = {"localhost"}

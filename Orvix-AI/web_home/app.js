@@ -266,6 +266,12 @@ window.orvixPushState = function (state) {
     });
   }
 
+  // Appearance: the payload carries the Settings > Appearance
+  // web-home animations toggle. When it is explicitly off the page
+  // adds a class that disables its CSS animations/transitions (see
+  // style.css); anything else keeps the animated default.
+  document.body.classList.toggle("no-animations", state.webHomeAnimations === false);
+
   const core = state.core || {};
   const coreWrap = $("#coreWrap");
   if (coreWrap && core.state) coreWrap.dataset.state = core.state;
