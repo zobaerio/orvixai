@@ -300,16 +300,29 @@ class QuickTile:
     key: str
     label: str
     command: str  # text routed through the app's normal _send_text pipeline
+    # Tile category: "command" tiles send their command text through
+    # the normal pipeline; the "power" tile is the power-options entry
+    # point — its command is the deterministic power-options command,
+    # handled locally (never free text for the AI model), and the
+    # desktop app opens its power-options dialog for it.
+    kind: str = "command"
 
 
 def quick_action_tiles() -> tuple[QuickTile, ...]:
-    """The six Quick Actions tiles (mockup grid, 2 x 3).
+    """The ten Quick Actions tiles (the original six plus the four
+    completions: Downloads, Windows Settings, Task Manager and System
+    Information).
 
     Commands reuse the exact strings the existing quick-action buttons
-    already send, so Chrome / File Explorer resolve through the same
-    deterministic open-application path as typed commands. There is no
-    deterministic 'power menu' handler in the app, so that tile routes
-    its text through the normal command pipeline like a typed request.
+    already send, so Chrome / File Explorer / Downloads / System
+    Information resolve through the same deterministic paths as typed
+    commands. Windows Settings resolves through the deterministic
+    ms-settings: open and Task Manager through the taskmgr app alias.
+
+    The power tile no longer routes free text to the AI model: its
+    command is the deterministic "power options" command, which the
+    automation layer handles locally (Lock runs immediately; Restart
+    and Shut down require approval plus a cancellable countdown).
     """
     return (
         QuickTile("chrome", "Open Chrome", "Chrome kholo"),
@@ -317,7 +330,11 @@ def quick_action_tiles() -> tuple[QuickTile, ...]:
         QuickTile("notepad", "Notepad", "Notepad kholo"),
         QuickTile("calculator", "Calculator", "Calculator kholo"),
         QuickTile("explorer", "File Explorer", "File Explorer kholo"),
-        QuickTile("power", "Power Menu", "Power menu"),
+        QuickTile("downloads", "Downloads", "Downloads kholo"),
+        QuickTile("settings", "Windows Settings", "Windows Settings kholo"),
+        QuickTile("task_manager", "Task Manager", "Task Manager kholo"),
+        QuickTile("system_info", "System Information", "system information"),
+        QuickTile("power", "Power Options", "power options", kind="power"),
     )
 
 

@@ -81,7 +81,7 @@ class OrvixDesktop:
         self.speech = SpeechEngine()
         self.events: queue.Queue = queue.Queue()
         self._web_home = None  # WebViewHome instance while the HTML home window is open
-        self.agent = OrvixAgent(self.settings, self._request_approval)
+        self.agent = OrvixAgent(self.settings, self._request_approval, countdown_wait=self._power_countdown_wait)
         self._busy = False
         self.task_store = TaskStore()
         self._startup_recovered_task_count = 0
@@ -100,6 +100,7 @@ class OrvixDesktop:
         self._tray_thread: threading.Thread | None = None
         self._background_mode = False
         self._approval_dialog: tk.Toplevel | None = None
+        self._power_countdown_dialog: tk.Toplevel | None = None
         self.wake_enabled = False
         self._wake_thread: threading.Thread | None = None
         self._speech_active = threading.Event()
@@ -1078,13 +1079,21 @@ class OrvixDesktop:
                            font=("Segoe UI", 8, "bold"), cursor="hand2")
         see_all.pack(side="right")
         see_all.bind("<Button-1>", lambda _e: self._quick_actions())
-        # Icon grid (2 x 3): glyphs are drawn with Canvas primitives in
+        # Icon grid: glyphs are drawn with Canvas primitives in
         # _draw_quick_glyph — no external icon assets. Every tile routes
         # its command text through _send_text, the same pipeline (and
-        # approval gates) as typed commands.
+        # approval gates) as typed commands — except the power tile,
+        # which opens the power-options dialog (its deterministic
+        # "power options" handling), and the Downloads / System
+        # Information tiles, which are skipped here because the two
+        # dedicated buttons directly below already provide exactly
+        # those commands in this Tk grid (the web grid, which has no
+        # such buttons, shows all ten tiles). Nothing is dropped.
         qa_grid = tk.Frame(actions, bg=PANEL)
         qa_grid.pack(fill="x", padx=9, pady=(0, 4))
-        for idx, tile in enumerate(quick_action_tiles()):
+        tk_tiles = [tile for tile in quick_action_tiles()
+                    if tile.key not in {"downloads", "system_info"}]
+        for idx, tile in enumerate(tk_tiles):
             row, col = divmod(idx, 2)
             cell = tk.Frame(qa_grid, bg=CARD, highlightbackground="#263a56",
                             highlightthickness=1, bd=0, cursor="hand2")
@@ -1097,8 +1106,12 @@ class OrvixDesktop:
             tile_label = tk.Label(cell, text=tile.label, bg=CARD, fg="#d8eafa",
                                   font=("Segoe UI Semibold", 8, "bold"), cursor="hand2")
             tile_label.pack(pady=(1, 6))
-            for widget in (cell, glyph, tile_label):
-                widget.bind("<Button-1>", lambda _e, c=tile.command: self._send_text(c))
+            if tile.kind == "power":
+                for widget in (cell, glyph, tile_label):
+                    widget.bind("<Button-1>", lambda _e: self._show_power_options())
+            else:
+                for widget in (cell, glyph, tile_label):
+                    widget.bind("<Button-1>", lambda _e, c=tile.command: self._send_text(c))
         # Existing quick commands that are not part of the mockup grid
         # stay available as compact buttons — nothing is dropped.
         for label, command in [("▤  OPEN DOWNLOADS", "Downloads kholo"),
@@ -1627,6 +1640,27 @@ class OrvixDesktop:
             canvas.create_rectangle(3, 8, 16, 13, fill="#fcd34d", outline="#fbbf24")
             canvas.create_polygon(3, 12, 14, 12, 17, 16, 33, 16, 33, 30, 3, 30,
                                   fill="#f5b921", outline="#fbbf24")
+        elif key == "downloads":
+            canvas.create_rectangle(3, 8, 16, 13, fill="#fcd34d", outline="#fbbf24")
+            canvas.create_polygon(3, 12, 14, 12, 17, 16, 33, 16, 33, 30, 3, 30,
+                                  fill="#f5b921", outline="#fbbf24")
+            canvas.create_line(18, 17, 18, 26, fill="#0b1120", width=2)
+            canvas.create_polygon(14, 23, 22, 23, 18, 28, fill="#0b1120", outline="")
+        elif key == "settings":
+            canvas.create_oval(9, 9, 27, 27, outline="#a5f3fc", width=3)
+            canvas.create_oval(15, 15, 21, 21, fill="#a5f3fc", outline="")
+            for x1, y1, x2, y2 in ((18, 3, 18, 8), (18, 28, 18, 33),
+                                   (3, 18, 8, 18), (28, 18, 33, 18)):
+                canvas.create_line(x1, y1, x2, y2, fill="#a5f3fc", width=3)
+        elif key == "task_manager":
+            canvas.create_rectangle(5, 6, 31, 30, fill="#1e3a5f", outline="#38bdf8")
+            for i, h in enumerate((12, 7, 16)):
+                x = 9 + i * 7
+                canvas.create_rectangle(x, 26 - h, x + 4, 26, fill="#34d399", outline="")
+        elif key == "system_info":
+            canvas.create_oval(6, 6, 30, 30, outline="#a5f3fc", width=2)
+            canvas.create_line(18, 13, 18, 24, fill="#a5f3fc", width=2)
+            canvas.create_oval(16, 8, 20, 12, fill="#a5f3fc", outline="")
         elif key == "power":
             canvas.create_arc(8, 8, 28, 28, start=-40, extent=260, style="arc",
                               outline="#a5f3fc", width=2)
@@ -2491,6 +2525,15 @@ class OrvixDesktop:
         command = text.strip()
         if not command:
             return
+        # Deterministic power-options entry point: the power tile
+        # (Tk and web) and a typed/voice "power options" / "power
+        # menu" request open the power-options dialog here instead of
+        # being queued or sent to the AI model as free text. The
+        # dialog's choices re-enter _send_text with their own
+        # deterministic commands, so no loop occurs.
+        if command.casefold().strip(".!? ") in {"power options", "power menu"}:
+            self._show_power_options()
+            return
         if self._busy:
             if not messagebox.askyesno(
                 "Queue this command?",
@@ -3113,6 +3156,173 @@ class OrvixDesktop:
             except tk.TclError:
                 pass
 
+    # -- Power options + countdown-cancel ---------------------------
+    # The Power Options tile (Tk grid and, via _send_text, the web
+    # grid) opens this dialog instead of sending free text to the AI
+    # model. Each choice routes its deterministic command through
+    # _send_text, so typed / voice / tile power commands all share
+    # one path: the agent's deterministic handling in
+    # orvix.automation. Lock runs immediately (the explicit click is
+    # its confirmation); Restart / Shut down first pass
+    # _request_approval, then _power_countdown_wait below.
+    def _show_power_options(self) -> None:
+        try:
+            win = tk.Toplevel(self.root)
+        except tk.TclError:
+            return
+        win.title("Power Options")
+        win.geometry("420x300")
+        win.minsize(360, 260)
+        win.configure(bg=BG)
+        win.transient(self.root)
+        win.grab_set()
+        tk.Label(win, text="POWER OPTIONS", bg=BG, fg=ORANGE,
+                 font=("Segoe UI Semibold", 12, "bold")).pack(anchor="w", padx=18, pady=(16, 7))
+        tk.Label(win, text="Lock runs immediately. Restart and Shut down ask for "
+                           "approval first, then show a countdown you can cancel.",
+                 bg=BG, fg=MUTED, font=("Segoe UI", 9), wraplength=380,
+                 justify="left").pack(anchor="w", padx=18, pady=(0, 10))
+
+        def choose(command: str) -> None:
+            try:
+                win.grab_release()
+                win.destroy()
+            except tk.TclError:
+                pass
+            self._send_text(command)
+
+        def choose_cancel() -> None:
+            try:
+                win.grab_release()
+                win.destroy()
+            except tk.TclError:
+                pass
+
+        for label, command in (
+                ("Lock Workstation", "lock workstation"),
+                ("Restart Computer", "restart computer"),
+                ("Shut Down Computer", "shut down computer")):
+            tk.Button(win, text=label, command=lambda c=command: choose(c),
+                      bg="#0e1d32", fg="#d8eafa", activebackground="#16415b",
+                      activeforeground="#ffffff", relief="flat", bd=0, anchor="w",
+                      font=("Segoe UI Semibold", 10, "bold"), padx=12, pady=9,
+                      cursor="hand2").pack(fill="x", padx=16, pady=4)
+        ttk.Button(win, text="Cancel", command=choose_cancel).pack(pady=(8, 12))
+        win.protocol("WM_DELETE_WINDOW", choose_cancel)
+
+    def _power_countdown_wait(self, seconds: int) -> bool:
+        """Countdown callback for gated power actions (worker thread).
+
+        Schedules the countdown dialog on the Tk thread and blocks
+        until it finishes: True only when the countdown ran to
+        completion uncancelled; task cancellation, dialog dismissal
+        and timeouts all return False, so the OS call never runs.
+        """
+        try:
+            total = max(1, int(seconds))
+        except (TypeError, ValueError):
+            return False
+        event = threading.Event()
+        result = {"completed": False}
+        cancel_event = self._active_task_cancel_event
+        if cancel_event is not None and cancel_event.is_set():
+            return False
+        try:
+            self.root.after(0, self._show_power_countdown, total, event, result, cancel_event)
+        except tk.TclError:
+            return False
+        deadline = time.monotonic() + total + 30
+        while not event.wait(timeout=0.1):
+            if cancel_event is not None and cancel_event.is_set():
+                try:
+                    self.root.after(0, self._dismiss_power_countdown_dialog)
+                except tk.TclError:
+                    pass
+                return False
+            if time.monotonic() >= deadline:
+                try:
+                    self.root.after(0, self._dismiss_power_countdown_dialog)
+                except tk.TclError:
+                    pass
+                return False
+        return bool(result["completed"])
+
+    def _show_power_countdown(
+        self,
+        seconds: int,
+        event: threading.Event,
+        result: dict,
+        cancel_event: threading.Event | None = None,
+    ) -> None:
+        if event.is_set() or (cancel_event is not None and cancel_event.is_set()):
+            result["completed"] = False
+            event.set()
+            return
+        win = tk.Toplevel(self.root)
+        self._power_countdown_dialog = win
+        win.title("Power action countdown")
+        win.geometry("420x240")
+        win.minsize(360, 200)
+        win.configure(bg=BG)
+        win.transient(self.root)
+        win.grab_set()
+        tk.Label(win, text="POWER ACTION STARTING", bg=BG, fg=ORANGE,
+                 font=("Segoe UI Semibold", 12, "bold")).pack(anchor="w", padx=18, pady=(16, 7))
+        tk.Label(win, text="The approved power action will run when this countdown "
+                           "finishes. Press Cancel to abort it — nothing will run.",
+                 bg=BG, fg=MUTED, font=("Segoe UI", 9), wraplength=380,
+                 justify="left").pack(anchor="w", padx=18, pady=(0, 8))
+        remaining_label = tk.Label(win, text=str(seconds), bg=BG, fg=TEXT,
+                                   font=("Segoe UI Semibold", 28, "bold"))
+        remaining_label.pack(pady=(2, 10))
+        state = {"remaining": int(seconds)}
+
+        def finish(completed: bool) -> None:
+            if event.is_set():
+                return
+            result["completed"] = completed
+            event.set()
+            if self._power_countdown_dialog is win:
+                self._power_countdown_dialog = None
+            try:
+                win.grab_release()
+                win.destroy()
+            except tk.TclError:
+                pass
+
+        def tick() -> None:
+            if event.is_set():
+                return
+            if cancel_event is not None and cancel_event.is_set():
+                finish(False)
+                return
+            state["remaining"] -= 1
+            if state["remaining"] <= 0:
+                finish(True)
+                return
+            try:
+                remaining_label.configure(text=str(state["remaining"]))
+                win.after(1000, tick)
+            except tk.TclError:
+                finish(False)
+
+        ttk.Button(win, text="Cancel", command=lambda: finish(False)).pack(pady=(0, 12))
+        win.protocol("WM_DELETE_WINDOW", lambda: finish(False))
+        try:
+            win.after(1000, tick)
+        except tk.TclError:
+            finish(False)
+
+    def _dismiss_power_countdown_dialog(self) -> None:
+        win = self._power_countdown_dialog
+        self._power_countdown_dialog = None
+        if win is not None:
+            try:
+                win.grab_release()
+                win.destroy()
+            except tk.TclError:
+                pass
+
     def _nav_home(self) -> None:
         """Home pill: this view is Home — return focus to the composer."""
         if hasattr(self, "entry"):
@@ -3127,7 +3337,7 @@ class OrvixDesktop:
         )
 
     def _quick_actions(self) -> None:
-        self._write_message("SYSTEM", "Quick Actions: Notepad kholo, Calculator kholo, YouTube kholo, Downloads kholo—এগুলোর যেকোনো একটি পাঠাও।", "system")
+        self._write_message("SYSTEM", "Quick Actions: Notepad kholo, Calculator kholo, YouTube kholo, Downloads kholo, Windows Settings kholo, Task Manager kholo, system information, power options—এগুলোর যেকোনো একটি পাঠাও।", "system")
 
     def _open_settings(self) -> None:
         win = tk.Toplevel(self.root)
