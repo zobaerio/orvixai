@@ -58,6 +58,13 @@ DEFAULTS: dict[str, Any] = {
     "floating_hud_width": 92,
     "floating_hud_height": 164,
     "floating_hud_opacity": 1.0,
+    "autonomous_brain": False,
+    # Continuous voice: VAD segments listening on speech boundaries
+    # (with automatic fallback to the classic listener on any capture
+    # failure) and barge-in lets the user interrupt neural-voice
+    # playback by speaking. Both default on; both fail safe.
+    "voice_vad_enabled": True,
+    "voice_barge_in": True,
 }
 
 
