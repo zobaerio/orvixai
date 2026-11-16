@@ -19,6 +19,67 @@ If the Releases page has no installer yet, the release has not been published. A
 
 The latest readable source tree is committed under `Orvix-AI/`. Download/clone this repository, then open that folder and run `install.bat` followed by `run.bat`. Use Python 3.12.x 64-bit on Windows 11.
 
+## Installation guide — run from source (Windows desktop)
+
+Step-by-step setup for the current source, including the Floating AI Core, the
+WebView home page, the Autonomous Brain and continuous voice.
+
+### 1. Prerequisites
+- **Python 3.11 or newer** (3.12.x 64-bit recommended) from python.org — during
+  install, tick **"Add python.exe to PATH"**.
+- **Git for Windows**.
+- **Microsoft Edge WebView2 runtime** — preinstalled on Windows 11. It powers
+  the WebView home window; if it is missing, the app automatically falls back
+  to the classic Tkinter home.
+
+### 2. Clone and install
+```bat
+git clone https://github.com/zobaerio/orvixai.git
+cd orvixai\Orvix-AI
+python -m venv .venv
+.venv\Scripts\activate
+pip install -r requirements.txt
+```
+
+### 3. Run
+```bat
+python app.py
+```
+On first run, settings from earlier versions are migrated automatically.
+
+### 4. Re-enter your API key (one time)
+The Windows keyring service was renamed in the ORVIX rebrand, so a previously
+saved API key does not migrate. Open **Settings** in the app and re-enter your
+endpoint URL, model name and API key once.
+
+### 5. Provider key for the multi-model brain (optional)
+To activate the Autonomous Brain / multi-model orchestration, copy
+`.env.example` to `.env` inside the `Orvix-AI` folder and fill in **one**
+provider key — `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `GEMINI_API_KEY`,
+`DEEPSEEK_API_KEY`, `XAI_API_KEY`, `MISTRAL_API_KEY` or
+`OPENROUTER_API_KEY`. You can also set `ORVIX_BUDGET_USD` as a hard spending
+cap. Never commit a filled-in `.env`. Local Ollama needs no key.
+
+### 6. Recommended settings
+- **Autonomous Brain (multi-agent)** — ON: complex commands are routed through
+  the Chief Intelligence Agent and its 15 specialised agents. OFF (default):
+  the app behaves exactly as before.
+- **WebView home** — ON (default): the HTML home window is the main home.
+- **Voice VAD** and **Barge-in** — ON (default): recording follows your speech,
+  and you can interrupt ORVIX while it is speaking. Headphones make barge-in
+  most reliable.
+
+### 7. Quick smoke check
+1. The home window opens and the CPU/RAM gauges show real percentages.
+2. Type `Notepad kholo` — Notepad opens (with the usual approval dialog).
+3. Press the mic and speak — the core pulses with your real voice level.
+4. While ORVIX is speaking, start talking — playback stops and it listens.
+5. Press `Ctrl+Shift+J` — the small overlay orb appears; drag it anywhere,
+   click it for the command palette.
+6. With the Brain ON, try a complex command such as *"Research solar panels
+   and then open Notepad"* — the steps appear in the task panel while the core
+   moves through THINKING → EXECUTING → COMPLETED.
+
 ## New in v1.2.3
 - A **OPEN REAL 3D AVATAR STUDIO** button in the desktop dashboard.
 - Three.js procedural 3D character meshes for LUNA, RUBY and MAYA with separate body parts, idle motion, waving, blinking and simulated speaking-mouth movement.
