@@ -49,9 +49,10 @@ function copyMessageText(text) {
   toast("Copy unavailable — clipboard is not accessible in this window.");
 }
 
-function addMessage(type, text, speaker, time) {
+function addMessage(type, text, speaker, time, streamId) {
   const wrap = document.createElement("div");
   wrap.className = type === "user" ? "message user-message" : "message assistant-message";
+  if (streamId) wrap.dataset.streamId = String(streamId);
   const head = document.createElement("div");
   head.className = "message-head";
   const label = document.createElement("b");
@@ -66,17 +67,45 @@ function addMessage(type, text, speaker, time) {
     stamp.textContent = time;
     head.appendChild(stamp);
   }
+  const p = document.createElement("p"); p.textContent = text;
   const copyButton = document.createElement("button");
   copyButton.type = "button";
   copyButton.className = "copy-button";
   copyButton.textContent = "Copy";
   copyButton.title = "Copy this message";
-  copyButton.addEventListener("click", () => copyMessageText(text));
+  // The copy reads the paragraph's CURRENT text at click time, so a
+  // streamed message copies its latest (eventually final) text, not
+  // the partial text it was created with.
+  copyButton.addEventListener("click", () => copyMessageText(p.textContent));
   head.appendChild(copyButton);
-  const p = document.createElement("p"); p.textContent = text;
   wrap.append(head, p); $("#chatLog").appendChild(wrap);
   trimChatLog();
   $("#chatLog").scrollTop = $("#chatLog").scrollHeight;
+  return wrap;
+}
+
+// ---------------------------------------------------------------------------
+// Streaming messages (Phase 8b): the bridge pushes partial updates for
+// ONE in-flight message, identified by a stable id and completed by a
+// push with final=true. The existing DOM node is updated in place —
+// never a new node per delta — so the message keeps its single
+// timestamp and its Copy button ends up copying the final text.
+// ---------------------------------------------------------------------------
+const streamNodes = new Map();
+function upsertStreamMessage(m) {
+  const type = m.kind === "user" ? "user" : m.kind === "system" ? "system" : "assistant";
+  let wrap = streamNodes.get(m.id);
+  if (wrap && wrap.isConnected) {
+    const p = wrap.querySelector("p");
+    if (p) p.textContent = m.text == null ? "" : String(m.text);
+    const log = $("#chatLog");
+    if (log) log.scrollTop = log.scrollHeight;
+  } else {
+    wrap = addMessage(type, m.text, m.speaker, m.time, m.id);
+    streamNodes.set(m.id, wrap);
+  }
+  if (m.final) streamNodes.delete(m.id);
+  return wrap;
 }
 
 // ---------------------------------------------------------------------------
@@ -358,8 +387,17 @@ function isSystemMessage(m) {
 window.orvixPushMessages = function (list) {
   (list || []).forEach((m) => {
     if (!m) return;
-    addMessage(m.kind === "user" ? "user" : m.kind === "system" ? "system" : "assistant", m.text, m.speaker, m.time);
-    if (isSystemMessage(m) && m.text) {
+    if (m.id) {
+      // Streamed message: partial pushes update the one in-flight
+      // node in place; the final push completes it.
+      upsertStreamMessage(m);
+    } else {
+      addMessage(m.kind === "user" ? "user" : m.kind === "system" ? "system" : "assistant", m.text, m.speaker, m.time);
+    }
+    // Partial stream pushes are never separate notifications: only a
+    // completed (final) message — or an ordinary non-streamed one —
+    // may join the notifications collection.
+    if (isSystemMessage(m) && m.text && m.final !== false) {
       notifications.push(String(m.text));
       renderNotifications();
     }
@@ -375,6 +413,7 @@ window.orvixPushMessages = function (list) {
 window.orvixChatCleared = function () {
   const log = $("#chatLog");
   if (log) log.querySelectorAll(".message").forEach((node) => node.remove());
+  streamNodes.clear();
 };
 
 // ---------------------------------------------------------------------------
