@@ -40,6 +40,7 @@ from .home_data import (
     model_status_lines,
     quick_action_tiles,
 )
+from .settings import ENDPOINT_HEALTH_STATES
 from .hud_data import build_task_entries
 from .ui_formatters import format_message_time
 from .version import APP_NAME, APP_VERSION
@@ -172,6 +173,23 @@ def _recent_task_records(app) -> list:
     return records if isinstance(records, list) else []
 
 
+def _probe_health(app):
+    """Probe-backed endpoint health for the payload, or None.
+
+    Reads the desktop app's ``endpoint_health`` attribute, which its
+    periodic probe maintains in the orvix.settings health states
+    (Premium Phase 8a). Only a known state passes through; a minimal
+    app with no probe — or an unrecognised value — yields None, and
+    the page then keeps the configuration-derived ``endpointState``
+    behaviour exactly as before. A probe result, when present, takes
+    precedence over that configuration-derived state on the page.
+    """
+    value = getattr(app, "endpoint_health", None)
+    if value in ENDPOINT_HEALTH_STATES:
+        return value
+    return None
+
+
 def _endpoint_state(lines) -> str:
     """One-word endpoint state for the model pill, taken from the
     ENDPOINT status line the payload already carries: 'configured'
@@ -218,6 +236,11 @@ def build_state_payload(app, stats=None) -> dict:
             "name": str(settings.get("model") or ""),
             "endpoint": str(settings.get("api_base_url") or ""),
             "endpointState": _endpoint_state(lines),
+            # Probe-backed health (Phase 8a): one of the settings
+            # health states, or None before the app's probe has a
+            # state to report. The page prefers a probe verdict
+            # (reachable / unreachable) over endpointState.
+            "health": _probe_health(app),
             "statusLines": [
                 {"label": line.label, "value": line.value, "state": line.state}
                 for line in lines
@@ -375,6 +398,8 @@ class WebViewHome:
         self.api = OrvixWebHomeApi(app)
         self.window = None
         self._messages = collections.deque(maxlen=MAX_MESSAGE_BUFFER)
+        self._stream_entry = None
+        self._stream_counter = 0
         self._cleared_pending = False
         self._lock = threading.Lock()
         self._stop = threading.Event()
@@ -400,6 +425,41 @@ class WebViewHome:
                  "kind": str(kind),
                  "time": format_message_time(datetime.now())})
 
+    def push_stream_message(self, speaker, text, kind, final=False):
+        """Push one streaming update for the single in-flight message.
+
+        The first call creates ONE buffer entry carrying a stable
+        ``id`` and ``final: False``; later calls update that same
+        entry's text in place — never one entry per delta — and the
+        call with ``final=True`` completes it (same id, ``final:
+        True``) and releases it, so the next stream starts a fresh
+        entry. The entry is stamped once, at creation, exactly like
+        ``push_message``. If the push loop has already drained the
+        entry, an update re-queues that same single entry so the page
+        receives the new text (and updates its DOM node in place by
+        id) — the buffer still never holds more than one entry for
+        the streamed message. Returns a copy of the entry.
+        """
+        with self._lock:
+            entry = self._stream_entry
+            if entry is None:
+                self._stream_counter += 1
+                entry = {"speaker": str(speaker), "text": str(text),
+                         "kind": str(kind),
+                         "time": format_message_time(datetime.now()),
+                         "id": f"stream-{self._stream_counter}",
+                         "final": False}
+                self._stream_entry = entry
+                self._messages.append(entry)
+            else:
+                entry["text"] = str(text)
+                if not any(item is entry for item in self._messages):
+                    self._messages.append(entry)
+            if final:
+                entry["final"] = True
+                self._stream_entry = None
+            return dict(entry)
+
     def clear_messages(self):
         """Empty the message buffer and flag the web chat as cleared.
 
@@ -409,6 +469,7 @@ class WebViewHome:
         """
         with self._lock:
             self._messages.clear()
+            self._stream_entry = None
             self._cleared_pending = True
 
     def drain_messages(self) -> list:

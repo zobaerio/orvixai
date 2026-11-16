@@ -658,6 +658,18 @@ class StaticWebHomeTests(unittest.TestCase):
         self.assertIn("MAX_CHAT_MESSAGES = 200", self.app_js)
         self.assertIn("trimChatLog", self.app_js)
 
+    def test_performance_chart_label_is_accurate(self):
+        # The Live Performance chart bars are real CPU/RAM samples
+        # when the bridge is connected, so its aria-label must not
+        # claim the graph is decorative; it names what it shows.
+        self.assertIn('id="performanceChart"', self.index_html)
+        self.assertNotIn("Decorative live performance graph", self.index_html)
+        self.assertNotIn('aria-label="Decorative', self.index_html)
+        self.assertIn(
+            'aria-label="Live performance graph — CPU and RAM samples"',
+            self.index_html,
+        )
+
     def test_footer_links_point_at_real_repo_only(self):
         self.assertIn("https://github.com/zobaerio/orvixai", self.index_html)
         self.assertNotIn('aria-label="YouTube"', self.index_html)

@@ -16,7 +16,7 @@ from typing import Callable
 
 from orvix.agent import OrvixAgent
 from orvix.task_planner import classify_plan_step_kind, format_plan_guidance, generate_task_plan, should_generate_task_plan
-from orvix.settings import VOICE_IDS, auto_configure_from_api_key, effective_voice, get_api_key, load_settings, save_settings, set_api_key, test_api_connection, validate_api_base_url, validate_api_key_transport, validate_speech_rate, validate_speech_volume, validate_voice_id, validate_wake_phrase
+from orvix.settings import ENDPOINT_HEALTH_INTERVAL_SECONDS, VOICE_IDS, advance_endpoint_health, auto_configure_from_api_key, effective_voice, endpoint_is_configured, fetch_model_list, get_api_key, initial_endpoint_health, load_settings, probe_endpoint_health, save_settings, set_api_key, test_api_connection, validate_api_base_url, validate_api_key_transport, validate_speech_rate, validate_speech_volume, validate_voice_id, validate_wake_phrase
 from orvix.speech import SpeechEngine, match_wake_phrase
 from orvix.core_states import CoreState
 from orvix.floating_core import FloatingCoreWidget
@@ -93,6 +93,12 @@ class OrvixDesktop:
         self._busy = False
         self._chat_line_counts: list[int] = []
         self._last_response_text = ""
+        # Streaming (Phase 8b): the in-flight assistant message being
+        # built delta by delta, if any. _stream_text is the text the
+        # chat widget currently shows for it; completion replaces it
+        # with the final assembled answer.
+        self._stream_active = False
+        self._stream_text = ""
         self.task_store = TaskStore()
         self._startup_recovered_task_count = 0
         self._task_recovery_error: str | None = None
@@ -113,6 +119,16 @@ class OrvixDesktop:
         self._power_countdown_dialog: tk.Toplevel | None = None
         self.wake_enabled = False
         self._wake_thread: threading.Thread | None = None
+        # Live endpoint health (Premium Phase 8a): the probe-backed
+        # state starts at checking / not_configured — never reachable
+        # before a real probe succeeds — and is advanced only on the
+        # Tk thread by _apply_endpoint_health.
+        self._endpoint_health_state = initial_endpoint_health(
+            endpoint_is_configured(
+                self.settings.get("api_base_url", ""),
+                self.settings.get("model", "")))
+        self._endpoint_health_stop = threading.Event()
+        self._endpoint_health_thread: threading.Thread | None = None
         self._speech_active = threading.Event()
         self._hero_core: FloatingCoreWidget | None = None
         self._hud_core: FloatingCoreWidget | None = None
@@ -139,6 +155,17 @@ class OrvixDesktop:
             )
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
         self.root.after(100, self._drain_events)
+        self._start_endpoint_health_monitor()
+
+    @property
+    def endpoint_health(self) -> str:
+        """Current probe-backed endpoint health state (Phase 8a).
+
+        One of the orvix.settings health states. The WebView home
+        bridge reads it for its state payload; it is updated only on
+        the Tk thread (see _apply_endpoint_health).
+        """
+        return getattr(self, "_endpoint_health_state", "not_configured")
 
     def _build_floating_hud(self) -> None:
         """Create a compact, draggable always-on-top ORVIX orb."""
@@ -794,7 +821,7 @@ class OrvixDesktop:
             logo.create_image(21, 21, image=self.brand_logo_photo)
         else:
             logo.create_oval(3, 3, 40, 40, outline=ACCENT, width=2)
-            logo.create_text(21, 21, text="J", fill="#d9fbff", font=("Segoe UI Black", 20, "bold"))
+            logo.create_text(21, 21, text="O", fill="#d9fbff", font=("Segoe UI Black", 20, "bold"))
         word = tk.Frame(brand, bg="#050b17")
         word.pack(side="left", padx=(9, 0), pady=13)
         tk.Label(word, text="ORVIX", bg="#050b17", fg=TEXT,
@@ -837,9 +864,9 @@ class OrvixDesktop:
                                     font=("Consolas", 10, "bold"), justify="right",
                                     anchor="e", width=13)
         self.clock_label.pack(side="right", padx=(10, 20))
-        # Endpoint pill: text comes from _model_status_text, which only
-        # reports the configured endpoint kind (local vs remote) — it
-        # never claims a live connection that was not checked.
+        # Endpoint pill: text comes from _model_status_text, which
+        # reports the probe-backed health state (Phase 8a) — it says
+        # REACHABLE only after a real probe has succeeded.
         self.model_status = tk.Label(top, text=self._model_status_text(), bg="#0e2c3c", fg=ACCENT,
                                      font=("Segoe UI", 8, "bold"), padx=11, pady=8)
         self.model_status.pack(side="right", padx=8, pady=17)
@@ -1836,12 +1863,38 @@ class OrvixDesktop:
         button.pack(fill="x", padx=10, pady=2)
 
     def _model_status_text(self) -> str:
+        # Probe-backed health (Phase 8a) drives the pill: REACHABLE is
+        # claimed only after a real /models probe succeeded, and the
+        # other states are labelled just as honestly. The pre-probe
+        # fallback below (no health state yet) keeps the original
+        # configuration-only wording.
+        health = getattr(self, "_endpoint_health_state", None)
+        if health == "reachable":
+            return "● AI ENDPOINT REACHABLE"
+        if health == "unreachable":
+            return "● AI ENDPOINT UNREACHABLE"
+        if health == "checking":
+            return "● CHECKING AI ENDPOINT"
+        if health == "not_configured":
+            return "● AI ENDPOINT NOT CONFIGURED"
         base = str(self.settings.get("api_base_url", "")).lower()
         if "localhost" in base or "127.0.0.1" in base or "::1" in base:
             return "● LOCAL AI ENDPOINT"
         return "● AI ENDPOINT SET"
 
+    # Tk Text mark anchoring the body of the in-flight streamed
+    # message (Phase 8b). The streamed message is always the last one
+    # in the widget, so its body runs from this mark to the end.
+    _STREAM_BODY_MARK = "orvix_stream_body"
+
     def _write_message(self, speaker: str, text: str, kind: str) -> None:
+        # A whole-message write supersedes in-place streaming: the
+        # streamed partial stays as written and the final answer will
+        # be delivered as its own message by _finish_response (which
+        # only completes the stream while it is still active).
+        if getattr(self, "_stream_active", False):
+            self._stream_active = False
+            self._stream_text = ""
         self.chat.configure(state="normal")
         tag = "name_user" if kind == "user" else "name_assistant" if kind == "assistant" else "name_system"
         # The speaker line carries the message time (HH:MM, shared
@@ -1863,6 +1916,115 @@ class OrvixDesktop:
                 home.push_message(speaker, text, kind)
             except Exception:
                 pass  # the web home mirror must never break the console
+
+    def _push_stream_to_web_home(self, text: str, final: bool) -> None:
+        home = getattr(self, "_web_home", None)
+        if home is not None:
+            try:
+                home.push_stream_message("ORVIX", text, "assistant", final=final)
+            except Exception:
+                pass  # the web home mirror must never break the console
+
+    def _update_streamed_message(self, text: str) -> None:
+        """Create or update the in-flight streamed assistant message.
+
+        Runs on the Tk thread (scheduled via ``root.after`` from the
+        worker's ``on_delta`` callback, the same channel
+        ``_finish_response`` uses, so deltas and completion stay in
+        order). The first delta creates the message — one speaker
+        header, one timestamp — and later deltas replace only its
+        body, in place. The 200-message bound is applied at creation
+        through ``_trim_chat_history`` (whole oldest messages only;
+        the in-flight message is newest, so it is never the one
+        trimmed or split). Copy Last Response tracks the latest text
+        and ends up holding the final assembled answer.
+        """
+        text = str(text or "")
+        if not text:
+            return
+        try:
+            if getattr(self, "_stream_active", False):
+                try:
+                    current = self.chat.get(self._STREAM_BODY_MARK, "end-1c")
+                except tk.TclError:
+                    current = None
+                if current != getattr(self, "_stream_text", ""):
+                    # Another message was written after the streamed
+                    # body: never delete across it. Detach — the final
+                    # answer is then written as its own message.
+                    self._stream_active = False
+                    self._stream_text = ""
+                    return
+                self.chat.configure(state="normal")
+                self.chat.delete(self._STREAM_BODY_MARK, "end")
+                self.chat.insert("end", text, "body")
+                self.chat.configure(state="disabled")
+                self.chat.see("end")
+                self._stream_text = text
+                self._last_response_text = text
+                counts = getattr(self, "_chat_line_counts", None)
+                if counts:
+                    counts[-1] = text.count("\n") + 3
+                self._push_stream_to_web_home(text, final=False)
+                return
+            # First delta: create the message exactly like
+            # _write_message does (header + timestamp + body).
+            self.chat.configure(state="normal")
+            stamp = format_message_time(datetime.now())
+            self.chat.insert("end", "ORVIX ", "name_assistant")
+            self.chat.insert("end", f"· {stamp}\n", "time")
+            self.chat.mark_set(self._STREAM_BODY_MARK, "end-1c")
+            self.chat.mark_gravity(self._STREAM_BODY_MARK, "left")
+            self.chat.insert("end", text, "body")
+            self._stream_active = True
+            self._stream_text = text
+            self._last_response_text = text
+            self._trim_chat_history(text)
+            self.chat.configure(state="disabled")
+            self.chat.see("end")
+            self._push_stream_to_web_home(text, final=False)
+        except tk.TclError:
+            pass
+
+    def _complete_streamed_message(self, final_text: str) -> bool:
+        """Finalise the in-flight streamed message with the full text.
+
+        Returns True when the streamed message was completed in place
+        (its body replaced by the final assembled text, identical to
+        what the single-shot path would have written); False when
+        there is no intact in-flight message, in which case the
+        caller falls back to ``_write_message``.
+        """
+        if not getattr(self, "_stream_active", False):
+            return False
+        final_text = str(final_text or "")
+        try:
+            try:
+                current = self.chat.get(self._STREAM_BODY_MARK, "end-1c")
+            except tk.TclError:
+                current = None
+            if current != getattr(self, "_stream_text", ""):
+                self._stream_active = False
+                self._stream_text = ""
+                return False
+            self.chat.configure(state="normal")
+            self.chat.delete(self._STREAM_BODY_MARK, "end")
+            self.chat.insert("end", f"{final_text}\n", "body")
+            self.chat.insert("end", "\n", "body")
+            self.chat.configure(state="disabled")
+            self.chat.see("end")
+        except tk.TclError:
+            self._stream_active = False
+            self._stream_text = ""
+            return False
+        counts = getattr(self, "_chat_line_counts", None)
+        if counts:
+            counts[-1] = final_text.count("\n") + 3
+        self._last_response_text = final_text
+        self._stream_active = False
+        self._stream_text = ""
+        self._push_stream_to_web_home(final_text, final=True)
+        return True
 
     def _trim_chat_history(self, text: str) -> None:
         """Bound the conversation view to MAX_CHAT_MESSAGES messages.
@@ -1957,6 +2119,8 @@ class OrvixDesktop:
                 pass
         self._chat_line_counts = []
         self._last_response_text = ""
+        self._stream_active = False
+        self._stream_text = ""
         home = getattr(self, "_web_home", None)
         if home is not None:
             try:
@@ -2962,6 +3126,13 @@ class OrvixDesktop:
                         tool_event=lambda name, event_status, action_id, note: self._record_tool_action(
                             task_id, name, event_status, action_id, note
                         ),
+                        # Streaming (Phase 8b): deltas are scheduled on
+                        # the Tk thread through root.after — the same
+                        # channel _finish_response uses — so the
+                        # in-flight message updates stay in order with
+                        # its completion.
+                        on_delta=lambda streamed_text: self.root.after(
+                            0, self._update_streamed_message, streamed_text),
                     )
             except Exception as exc:
                 failed = True
@@ -2989,7 +3160,12 @@ class OrvixDesktop:
             pass
 
     def _finish_response(self, result: str, task_id: str | None = None, task_status: str = "completed") -> None:
-        self._write_message("ORVIX", result, "assistant")
+        # Streaming (Phase 8b): when an in-flight streamed message is
+        # intact, complete it in place with the final assembled text;
+        # otherwise write the result as a whole message, exactly as
+        # before streaming existed.
+        if not self._complete_streamed_message(result):
+            self._write_message("ORVIX", result, "assistant")
         self._push_activity(f"{task_status.upper()}: " + (self._active_task_command or result).splitlines()[0])
         # Native notification at the same finalised outcome that sets
         # the COMPLETED / ERROR core states below (partial counts as
@@ -3136,6 +3312,101 @@ class OrvixDesktop:
                 kind,
                 detail=detail,
             )
+        except Exception:
+            pass
+
+    # -- live endpoint health (Premium Phase 8a) ----------------------
+
+    def _start_endpoint_health_monitor(self) -> None:
+        """Start the periodic endpoint health probe (daemon thread).
+
+        The loop probes immediately, then waits
+        ENDPOINT_HEALTH_INTERVAL_SECONDS between probes. It never
+        touches a Tk widget: results reach the Tk thread through the
+        events queue, like every other worker in this app.
+        """
+        if getattr(self, "_endpoint_health_thread", None) is not None:
+            return
+        if getattr(self, "_endpoint_health_stop", None) is None:
+            self._endpoint_health_stop = threading.Event()
+        thread = threading.Thread(
+            target=self._endpoint_health_loop,
+            name="orvix-endpoint-health",
+            daemon=True,
+        )
+        self._endpoint_health_thread = thread
+        thread.start()
+
+    def _endpoint_health_loop(self) -> None:
+        stop = self._endpoint_health_stop
+        while not stop.is_set():
+            try:
+                self._probe_endpoint_health_once()
+            except Exception:
+                pass  # a failed tick must never kill the monitor
+            stop.wait(ENDPOINT_HEALTH_INTERVAL_SECONDS)
+
+    def _probe_endpoint_health_once(self) -> None:
+        """Run one probe on this worker thread and enqueue the result.
+
+        Unconfigured endpoints are not probed at all — no network
+        traffic — the tick only re-asserts the not_configured state.
+        Configured probes are the shared /models GET with the
+        existing short timeouts (orvix.settings.probe_endpoint_health).
+        """
+        settings = self.settings if isinstance(self.settings, dict) else {}
+        base_url = settings.get("api_base_url", "")
+        model = settings.get("model", "")
+        if not endpoint_is_configured(base_url, model):
+            self.events.put((self._apply_endpoint_health, (False, None, "")))
+            return
+        try:
+            api_key = get_api_key()
+        except Exception:
+            api_key = ""
+        result = probe_endpoint_health(base_url, model, api_key)
+        self.events.put((
+            self._apply_endpoint_health,
+            (True, bool(result.get("ok")), str(result.get("message", ""))),
+        ))
+
+    def _apply_endpoint_health(self, configured: bool, probe_ok, detail: str = "") -> None:
+        """Apply one probe tick on the Tk thread.
+
+        Advances the pure health state machine, refreshes the model
+        pill, and — only on a reachable <-> unreachable flip — fires
+        the Phase 6 endpoint_health notification through _notify
+        (which respects the Settings toggle). The first probe's
+        verdict and steady-state polls never notify.
+        """
+        new_state, should_notify = advance_endpoint_health(
+            getattr(self, "_endpoint_health_state", None),
+            configured=configured,
+            probe_ok=probe_ok,
+        )
+        self._endpoint_health_state = new_state
+        try:
+            self.model_status.configure(text=self._model_status_text())
+        except Exception:
+            pass
+        if should_notify:
+            self._notify("endpoint_health", detail)
+
+    def _reset_endpoint_health(self) -> None:
+        """Re-derive the pre-probe state after a settings change.
+
+        The saved endpoint may differ from the one the current state
+        describes, so the state returns to checking / not_configured
+        and the pill stops carrying the old endpoint's verdict until
+        the next probe answers.
+        """
+        settings = self.settings if isinstance(self.settings, dict) else {}
+        self._endpoint_health_state = initial_endpoint_health(
+            endpoint_is_configured(
+                settings.get("api_base_url", ""),
+                settings.get("model", "")))
+        try:
+            self.model_status.configure(text=self._model_status_text())
         except Exception:
             pass
 
@@ -3547,11 +3818,21 @@ class OrvixDesktop:
             ("Model name", "model", "qwen2.5:3b"),
         ]
         tk.Label(ai_model_tab, text="Local Ollama or any OpenAI-compatible API endpoint can be used.", bg=BG, fg=MUTED, font=("Segoe UI", 9), wraplength=540, justify="left").pack(anchor="w", pady=(0, 6))
+        model_combo: ttk.Combobox | None = None
         for label, key, placeholder in fields:
             tk.Label(ai_model_tab, text=label, bg=BG, fg="#cbd7e8", font=("Segoe UI Semibold", 9)).pack(anchor="w", pady=(6, 5))
             var = tk.StringVar(value=str(self.settings.get(key, placeholder)))
             variables[key] = var
-            ttk.Entry(ai_model_tab, textvariable=var).pack(fill="x", ipady=4)
+            if key == "model":
+                # Editable combobox (Premium Phase 8a): typing a model
+                # name works exactly as the old Entry did, and the
+                # "Load models" button below can fill the dropdown
+                # from the configured endpoint. Nothing is fetched
+                # when this dialog opens.
+                model_combo = ttk.Combobox(ai_model_tab, textvariable=var)
+                model_combo.pack(fill="x", ipady=4)
+            else:
+                ttk.Entry(ai_model_tab, textvariable=var).pack(fill="x", ipady=4)
 
         tk.Label(ai_model_tab, text="API key (stored in Windows Credential Manager; blank for local Ollama)", bg=BG, fg="#cbd7e8", font=("Segoe UI Semibold", 9)).pack(anchor="w", pady=(12, 5))
         key_var = tk.StringVar(value=get_api_key())
@@ -3625,6 +3906,7 @@ class OrvixDesktop:
                 variables["model"].set(result["model"])
                 self.settings = new_settings
                 self.agent.update_settings(self.settings)
+                self._reset_endpoint_health()
                 self.model_status.configure(text=self._model_status_text())
                 if hasattr(self, "llm_detail_label"):
                     self.llm_detail_label.configure(
@@ -3665,6 +3947,63 @@ class OrvixDesktop:
 
         auto_setup_button = ttk.Button(ai_model_tab, text="AUTO SETUP FROM API KEY", command=auto_setup)
         auto_setup_button.pack(anchor="w", pady=(4, 4))
+
+        model_list_status = tk.Label(
+            ai_model_tab,
+            text="Load models fetches the model list from the endpoint in the API base URL field above; nothing is fetched until you press it.",
+            bg=BG, fg=MUTED, font=("Segoe UI", 8), wraplength=540, justify="left",
+        )
+        model_list_status.pack(fill="x", pady=(2, 2))
+
+        def show_model_list(result: dict, requested_model: str) -> None:
+            try:
+                if not win.winfo_exists():
+                    return
+                load_models_button.configure(state="normal", text="Load models")
+                if not result.get("ok"):
+                    # Honest failure: the shared fetch's own error
+                    # text, and the dropdown keeps whatever it had —
+                    # a model list is never fabricated.
+                    model_list_status.configure(
+                        text=f"Could not load models: {result.get('message', 'No result.')}",
+                        fg=ORANGE,
+                    )
+                    return
+                models = [str(name) for name in result.get("models", [])]
+                if model_combo is not None:
+                    model_combo.configure(values=models)
+                # The current model stays selected when the endpoint
+                # lists it; otherwise the typed value is left as-is.
+                if requested_model in models:
+                    variables["model"].set(requested_model)
+                model_list_status.configure(
+                    text=(
+                        f"Loaded {len(models)} model(s) from the endpoint. "
+                        "Pick one from the Model name dropdown or keep typing a name."
+                    ),
+                    fg=GREEN if models else MUTED,
+                )
+            except tk.TclError:
+                pass
+
+        def load_models() -> None:
+            base_value = variables["api_base_url"].get().strip()
+            if not base_value:
+                messagebox.showerror("Load models", "Enter the API base URL first.", parent=win)
+                return
+            requested_model = variables["model"].get().strip()
+            api_key_value = key_var.get().strip()
+            load_models_button.configure(state="disabled", text="Loading…")
+            model_list_status.configure(text="Fetching the model list from the endpoint…", fg=MUTED)
+
+            def worker() -> None:
+                result = fetch_model_list(base_value, api_key_value)
+                self.events.put((show_model_list, (result, requested_model)))
+
+            threading.Thread(target=worker, daemon=True).start()
+
+        load_models_button = ttk.Button(ai_model_tab, text="Load models", command=load_models)
+        load_models_button.pack(anchor="w", pady=(2, 4))
 
         tk.Label(voice_tab, text="Speech recognition language", bg=BG, fg="#cbd7e8", font=("Segoe UI Semibold", 9)).pack(anchor="w", pady=(12, 5))
         lang_var = tk.StringVar(value=str(self.settings.get("speech_language", "bn-BD")))
@@ -3867,9 +4206,9 @@ class OrvixDesktop:
                 test_button.configure(state="normal", text="Test Connection")
                 # Endpoint-health notification at this real result
                 # point: the applied outcome of an on-demand
-                # connection test. There is no periodic health
-                # polling in the desktop flow, so no other
-                # endpoint_health events are fired.
+                # connection test. The periodic probe (Phase 8a)
+                # fires its own endpoint_health notifications, but
+                # only on reachable/unreachable transitions.
                 self._notify("endpoint_health", str(result.get("message", "")))
             except tk.TclError:
                 pass
@@ -3934,6 +4273,7 @@ class OrvixDesktop:
             if hasattr(self, "wake_phrase_label"):
                 self.wake_phrase_label.configure(text=str(new.get("wake_phrase", "hey orvix")))
             self.agent.update_settings(self.settings)
+            self._reset_endpoint_health()
             self.model_status.configure(text=self._model_status_text())
             if hasattr(self, "llm_detail_label"):
                 self.llm_detail_label.configure(text=f"{new.get('model', '')}\n{new.get('api_base_url', '')}")
@@ -4027,6 +4367,9 @@ class OrvixDesktop:
 
     def _exit_application(self) -> None:
         # Cancellation is requested only for a real exit, never for hide-to-tray.
+        health_stop = getattr(self, "_endpoint_health_stop", None)
+        if health_stop is not None:
+            health_stop.set()
         if self._active_task_cancel_event is not None:
             self._active_task_cancel_event.set()
         if self._active_task_id:
