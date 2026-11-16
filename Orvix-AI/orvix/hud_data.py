@@ -14,6 +14,7 @@ No tkinter import — fully unit-testable headless with fake snapshots.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Optional, Sequence
 
 DASH = "—"
@@ -161,6 +162,60 @@ def _log_lines(snapshot: Optional[dict]) -> tuple[str, ...]:
         else:
             lines.append(_clip(entry, 36))
     return tuple(lines)
+
+
+def format_task_timestamp(value: object) -> str:
+    """Format an ISO task timestamp as 'YYYY-MM-DD HH:MM'.
+
+    The wall-clock time is taken as recorded (TaskStore stamps local
+    time with its offset), so no timezone conversion is applied.
+    Missing or unparseable values render as an em dash — a time is
+    shown only when one was actually recorded.
+    """
+    if not isinstance(value, str) or not value.strip():
+        return DASH
+    try:
+        parsed = datetime.fromisoformat(value.strip().replace("Z", "+00:00"))
+    except ValueError:
+        return DASH
+    return parsed.strftime("%Y-%m-%d %H:%M")
+
+
+def build_task_entries(records: Optional[Sequence[dict]],
+                       limit: int = 10) -> list[dict]:
+    """Display-ready entries for a newest-first TaskStore record list.
+
+    Each entry carries only what the record itself holds: its status
+    (plus the HUD status mark for that status), its command text with
+    whitespace collapsed, and its created/finished times formatted by
+    :func:`format_task_timestamp`. ``finishedAt`` stays None while a
+    task has not finished — it is never invented. Non-dict rows are
+    skipped and the result is bounded to ``limit`` entries; an empty
+    or missing history yields an empty list.
+    """
+    if not records:
+        return []
+    try:
+        bound = max(0, int(limit))
+    except (TypeError, ValueError):
+        bound = 10
+    entries: list[dict] = []
+    for row in records:
+        if len(entries) >= bound:
+            break
+        if not isinstance(row, dict):
+            continue
+        status = str(row.get("status") or "unknown").strip().lower() or "unknown"
+        finished_raw = row.get("finished_at")
+        entries.append({
+            "status": status,
+            "mark": _STATUS_MARKS.get(status, "·"),
+            "command": " ".join(str(row.get("command", "")).split()),
+            "createdAt": format_task_timestamp(row.get("created_at")),
+            "finishedAt": (format_task_timestamp(finished_raw)
+                           if finished_raw else None),
+        })
+    return entries
 
 
 def build_hud_panels(snapshot: Optional[dict], app_tasks: Optional[Sequence[dict]],

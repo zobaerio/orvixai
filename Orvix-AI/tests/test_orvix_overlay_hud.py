@@ -12,7 +12,7 @@ from orvix.overlay import (
     clamp_overlay_position, is_click, normalize_overlay_command,
     overlay_window_height, palette_open_geometry, submit_overlay_command,
 )
-from orvix.hud_data import build_hud_panels
+from orvix.hud_data import build_hud_panels, build_task_entries, format_task_timestamp
 
 APP_PATH = Path(__file__).resolve().parents[1] / "app.py"
 
@@ -211,6 +211,59 @@ class TestAppWiring(unittest.TestCase):
     def test_double_click_cancels_palette_toggle(self):
         self.assertIn("def _floating_double_click", self.source)
         self.assertIn("self._cancel_overlay_click()", self.source)
+
+
+class TestTaskEntries(unittest.TestCase):
+    """The web Tasks view entries: real TaskStore record fields only,
+    formatted through the HUD helpers — nothing invented."""
+
+    def test_timestamp_formatting(self):
+        self.assertEqual(
+            format_task_timestamp("2026-11-16T05:30:45+06:00"), "2026-11-16 05:30")
+        self.assertEqual(
+            format_task_timestamp("2026-11-16T05:30:45Z"), "2026-11-16 05:30")
+
+    def test_timestamp_missing_or_bad_is_dash(self):
+        for bad in (None, "", "   ", "not a time", 12345):
+            with self.subTest(value=bad):
+                self.assertEqual(format_task_timestamp(bad), "—")
+
+    def test_entries_shape_and_values(self):
+        records = [
+            {"id": "1", "command": "Open   Chrome", "status": "COMPLETED",
+             "created_at": "2026-11-16T05:30:45+06:00",
+             "finished_at": "2026-11-16T05:31:05+06:00"},
+            {"id": "2", "command": "YouTube kholo", "status": "running",
+             "created_at": "2026-11-16T05:32:00+06:00", "finished_at": None},
+        ]
+        entries = build_task_entries(records)
+        self.assertEqual(len(entries), 2)
+        first, second = entries
+        self.assertEqual(first["status"], "completed")
+        self.assertEqual(first["mark"], "✓")
+        self.assertEqual(first["command"], "Open Chrome")
+        self.assertEqual(first["createdAt"], "2026-11-16 05:30")
+        self.assertEqual(first["finishedAt"], "2026-11-16 05:31")
+        self.assertEqual(second["status"], "running")
+        self.assertEqual(second["mark"], "●")
+        self.assertIsNone(second["finishedAt"])
+
+    def test_entries_empty_and_bounded(self):
+        self.assertEqual(build_task_entries(None), [])
+        self.assertEqual(build_task_entries([]), [])
+        records = [{"command": f"cmd {i}", "status": "queued",
+                    "created_at": None, "finished_at": None}
+                   for i in range(15)]
+        self.assertEqual(len(build_task_entries(records)), 10)
+        self.assertEqual(len(build_task_entries(records, limit=3)), 3)
+
+    def test_entries_skip_non_dict_rows(self):
+        entries = build_task_entries(
+            ["junk", {"command": "real", "status": "failed",
+                      "created_at": None, "finished_at": None}])
+        self.assertEqual(len(entries), 1)
+        self.assertEqual(entries[0]["command"], "real")
+        self.assertEqual(entries[0]["createdAt"], "—")
 
 
 if __name__ == "__main__":

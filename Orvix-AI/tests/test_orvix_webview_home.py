@@ -13,6 +13,7 @@ import json
 import queue
 import re
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -21,6 +22,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from orvix import webview_home
 from orvix.home_data import SystemStats, quick_action_tiles
+from orvix.task_store import TaskStore
 from orvix.version import APP_VERSION
 from orvix.webview_home import (
     ACTION_COMMANDS,
@@ -226,6 +228,126 @@ class PayloadTests(unittest.TestCase):
         self.assertTrue(payload["wakeEnabled"])
 
 
+class FakeTaskStore:
+    """Minimal stand-in with TaskStore.list_tasks' newest-first shape."""
+
+    def __init__(self, records):
+        self._records = records
+        self.limits = []
+
+    def list_tasks(self, limit=100):
+        self.limits.append(limit)
+        return [dict(row) for row in self._records[:limit]]
+
+
+class PayloadTasksTests(unittest.TestCase):
+    def setUp(self):
+        self.app = FakeApp()
+        self.stats = SystemStats(None, None, None, "—", "—", "—", None)
+
+    def test_tasks_block_shape_when_no_store(self):
+        payload = build_state_payload(self.app, stats=self.stats)
+        json.dumps(payload)  # must be JSON-serializable
+        self.assertEqual(payload["tasks"], [])
+
+    def test_tasks_block_empty_history(self):
+        self.app.task_store = FakeTaskStore([])
+        payload = build_state_payload(self.app, stats=self.stats)
+        self.assertEqual(payload["tasks"], [])
+
+    def test_tasks_block_populated_from_fake_store(self):
+        self.app.task_store = FakeTaskStore([
+            {"id": "a1", "command": "Open Chrome", "status": "completed",
+             "created_at": "2026-11-16T05:30:45+06:00",
+             "finished_at": "2026-11-16T05:31:05+06:00",
+             "result": "done", "steps": [], "actions": []},
+            {"id": "a2", "command": "YouTube kholo", "status": "running",
+             "created_at": "2026-11-16T05:32:00+06:00",
+             "finished_at": None, "result": "", "steps": [], "actions": []},
+        ])
+        payload = build_state_payload(self.app, stats=self.stats)
+        json.dumps(payload)
+        tasks = payload["tasks"]
+        self.assertEqual(len(tasks), 2)
+        for entry in tasks:
+            self.assertEqual(
+                set(entry), {"status", "mark", "command", "createdAt", "finishedAt"})
+            self.assertIsInstance(entry["status"], str)
+            self.assertIsInstance(entry["command"], str)
+            self.assertIsInstance(entry["createdAt"], str)
+        self.assertEqual(tasks[0]["status"], "completed")
+        self.assertEqual(tasks[0]["command"], "Open Chrome")
+        self.assertEqual(tasks[0]["createdAt"], "2026-11-16 05:30")
+        self.assertEqual(tasks[0]["finishedAt"], "2026-11-16 05:31")
+        self.assertEqual(tasks[1]["status"], "running")
+        self.assertIsNone(tasks[1]["finishedAt"])
+        # The store is asked for exactly the bounded payload count.
+        self.assertEqual(self.app.task_store.limits, [webview_home.MAX_PAYLOAD_TASKS])
+
+    def test_tasks_block_bounded_to_latest_ten(self):
+        records = [
+            {"id": str(i), "command": f"cmd {i}", "status": "queued",
+             "created_at": "2026-11-16T05:30:45+06:00", "finished_at": None}
+            for i in range(15)
+        ]
+        self.app.task_store = FakeTaskStore(records)
+        payload = build_state_payload(self.app, stats=self.stats)
+        self.assertEqual(len(payload["tasks"]), 10)
+
+    def test_tasks_block_from_real_seeded_task_store(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = TaskStore(Path(tmp) / "task_history.json")
+            record = store.create_task("Notepad kholo")
+            store.update_task(record["id"], status="completed", result="opened")
+            store.create_task("Calculator kholo")
+            self.app.task_store = store
+            payload = build_state_payload(self.app, stats=self.stats)
+        json.dumps(payload)
+        tasks = payload["tasks"]
+        self.assertEqual(len(tasks), 2)
+        # list_tasks is newest-first: the still-running task leads.
+        self.assertEqual(tasks[0]["command"], "Calculator kholo")
+        self.assertEqual(tasks[0]["status"], "running")
+        self.assertIsNone(tasks[0]["finishedAt"])
+        self.assertEqual(tasks[1]["command"], "Notepad kholo")
+        self.assertEqual(tasks[1]["status"], "completed")
+        self.assertIsNotNone(tasks[1]["finishedAt"])
+        self.assertNotEqual(tasks[1]["createdAt"], "—")
+
+    def test_tasks_block_broken_store_yields_empty(self):
+        class BrokenStore:
+            def list_tasks(self, limit=100):
+                raise RuntimeError("store unavailable")
+
+        self.app.task_store = BrokenStore()
+        payload = build_state_payload(self.app, stats=self.stats)
+        self.assertEqual(payload["tasks"], [])
+
+
+class PayloadEndpointStateTests(unittest.TestCase):
+    """The model pill's source field: derived from the ENDPOINT status
+    line (configuration), never from the bridge connection."""
+
+    def setUp(self):
+        self.stats = SystemStats(None, None, None, "—", "—", "—", None)
+
+    def test_configured_endpoint(self):
+        payload = build_state_payload(FakeApp(), stats=self.stats)
+        self.assertEqual(payload["model"]["endpointState"], "configured")
+
+    def test_not_configured_endpoint(self):
+        app = FakeApp()
+        app.settings = {}
+        payload = build_state_payload(app, stats=self.stats)
+        self.assertEqual(payload["model"]["endpointState"], "not-configured")
+
+    def test_partially_configured_endpoint(self):
+        app = FakeApp()
+        app.settings = {"model": "qwen2.5:3b"}
+        payload = build_state_payload(app, stats=self.stats)
+        self.assertEqual(payload["model"]["endpointState"], "partial")
+
+
 class ApiDispatchTests(unittest.TestCase):
     def setUp(self):
         self.app = FakeApp()
@@ -370,6 +492,42 @@ class StaticWebHomeTests(unittest.TestCase):
         self.assertIn("renderNotifications", self.app_js)
         self.assertIn("isSystemMessage", self.app_js)
         self.assertNotIn('toast("No new notifications.")', self.app_js)
+
+    def test_tasks_nav_and_view_present(self):
+        # Tasks is a real nav entry backed by its own view, rendered
+        # from the payload's tasks block with an honest empty state.
+        self.assertIn('data-tab="tasks"', self.index_html)
+        self.assertIn('id="tasksView"', self.index_html)
+        self.assertIn('id="tasksList"', self.index_html)
+        self.assertIn('id="tasksEmpty"', self.index_html)
+        self.assertIn("No tasks yet", self.index_html)
+        self.assertIn("renderTasks", self.app_js)
+        self.assertIn("lastState.tasks", self.app_js)
+        self.assertIn(".task-row", self.style_css)
+
+    def test_tasks_view_standalone_honesty(self):
+        # Without the bridge the Tasks view must say so, not invent
+        # tasks: the not-connected wording lives in the renderer.
+        self.assertIn("Not connected — desktop bridge required.", self.app_js)
+
+    def test_chat_heading_pill_reflects_core_state(self):
+        # Bug #6: the pill is driven by the payload's busy flag / core
+        # mode on every push, not a hardcoded static READY label.
+        self.assertIn('id="chatStatePill"', self.index_html)
+        self.assertIn('id="chatStateLabel"', self.index_html)
+        self.assertIn("updateChatPill", self.app_js)
+        self.assertIn("state.busy", self.app_js)
+        self.assertIn("updateChatPill(state)", self.app_js)
+
+    def test_model_pill_distinguishes_bridge_from_endpoint(self):
+        # Bug #17: connecting the bridge must not blanket-label the
+        # model CONNECTED; the pill text comes from the payload's
+        # endpoint state / ENDPOINT status line.
+        self.assertNotIn('"<i></i> CONNECTED"', self.app_js)
+        self.assertIn("updateModelPill", self.app_js)
+        self.assertIn("endpointState", self.app_js)
+        self.assertIn("ENDPOINT CONFIGURED", self.app_js)
+        self.assertIn("NOT CONFIGURED", self.app_js)
 
     def test_footer_links_point_at_real_repo_only(self):
         self.assertIn("https://github.com/zobaerio/orvixai", self.index_html)
