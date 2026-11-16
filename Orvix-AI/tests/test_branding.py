@@ -26,6 +26,20 @@ class BrandingTests(unittest.TestCase):
                 self.assertGreater(icon.size[0], 0)
                 self.assertGreater(icon.size[1], 0)
 
+    def test_desktop_fallback_logo_uses_orvix_initial(self) -> None:
+        # When the brand image fails to load, app.py draws a fallback
+        # initial on the logo canvas. It must be the ORVIX initial,
+        # not the legacy initial that predates the rebrand.
+        app_source = (
+            Path(__file__).resolve().parent.parent / "app.py"
+        ).read_text(encoding="utf-8")
+        fallback = app_source.split("brand_logo_photo is not None", 1)[1].split(
+            "word = tk.Frame", 1
+        )[0]
+        self.assertIn('text="O"', fallback)
+        legacy_initial = chr(74)
+        self.assertNotIn(f'text="{legacy_initial}"', fallback)
+
     def test_mark_remains_square_and_transparent_outside_badge(self) -> None:
         image = branding._paint_icon(128)
         self.assertEqual(image.size, (128, 128))
