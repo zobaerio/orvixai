@@ -24,6 +24,10 @@ The latest readable source tree is committed under `Orvix-AI/`. Download/clone t
 Step-by-step setup for the current source, including the Floating AI Core, the
 WebView home page, the Autonomous Brain and continuous voice.
 
+**▶ Watch the installation guide (video, Bengali narration):**
+
+[![Watch the ORVIX AI installation guide](https://img.youtube.com/vi/P8sYzNB-kUo/hqdefault.jpg)](https://www.youtube.com/watch?v=P8sYzNB-kUo)
+
 ### 1. Prerequisites
 - **Python 3.11 or newer** (3.12.x 64-bit recommended) from python.org — during
   install, tick **"Add python.exe to PATH"**.
