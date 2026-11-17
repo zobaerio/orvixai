@@ -771,14 +771,15 @@ renderPerf();
 tryConnect();
 
 // ---------------------------------------------------------------------------
-// Ambient FX (Phase 11): two lightweight canvas particle layers — a
-// slow drift behind the whole page and a small orbital field inside
-// the hero reactor. Pure decoration: no data is read or invented.
+// Ambient FX (Phase 11, denser reactor field in Phase 12): two
+// lightweight canvas particle layers — a slow drift behind the whole
+// page and a denser field of motes inside the hero reactor, rising
+// slowly and twinkling. Pure decoration: no data is read or invented.
 // One shared requestAnimationFrame loop drives both; it pauses while
 // the document is hidden and stops entirely while the Settings >
-// Appearance animations toggle is off (body.no-animations), matching
-// the CSS animations. A slow watchdog restarts it if the toggle is
-// switched back on.
+// Appearance animations toggle is off (body.no-animations) or the OS
+// asks for reduced motion, matching the CSS animations. A slow
+// watchdog restarts it if the toggle is switched back on.
 // ---------------------------------------------------------------------------
 const FX_STATE_COLORS = {
   idle: "#00dfff", ready: "#00dfff", listening: "#00e88f",
@@ -804,10 +805,14 @@ function fxSeed() {
     fx.cw = coreCanvas.width;
     fx.ch = coreCanvas.height;
     if (!fx.core.length) {
-      for (let i = 0; i < 26; i++) {
-        fx.core.push({ a: Math.random() * Math.PI * 2,
-          orbit: 0.3 + Math.random() * 0.62,
-          speed: (Math.random() * 0.25 + 0.08) * (Math.random() < 0.5 ? 1 : -1),
+      for (let i = 0; i < 46; i++) {
+        const a = Math.random() * Math.PI * 2;
+        const rr = Math.sqrt(Math.random()) * 0.92;
+        fx.core.push({ x: Math.cos(a) * rr, y: Math.sin(a) * rr,
+          vy: Math.random() * 0.3 + 0.15,
+          sway: Math.random() * Math.PI * 2,
+          tw: Math.random() * Math.PI * 2,
+          ts: Math.random() * 1.6 + 0.6,
           r: Math.random() * 1.7 + 0.5 });
       }
     }
@@ -837,10 +842,16 @@ function fxDraw() {
     ctx.clearRect(0, 0, fx.cw, fx.ch);
     ctx.fillStyle = FX_STATE_COLORS[wrap.dataset.state] || FX_STATE_COLORS.idle;
     fx.core.forEach((p) => {
-      p.a += p.speed * 0.016;
-      const x = cx + Math.cos(p.a) * maxOrbit * p.orbit;
-      const y = cy + Math.sin(p.a) * maxOrbit * p.orbit;
-      ctx.globalAlpha = 0.25 + p.orbit * 0.5;
+      // Slow upward drift through the reactor disc; a mote that
+      // leaves the top respawns along the bottom chord. Brightness
+      // twinkles on its own phase, and a gentle sideways sway is
+      // applied at draw time so it never accumulates.
+      p.y -= p.vy * 0.016;
+      if (p.y < -0.95) { p.y = 0.9; p.x = (Math.random() * 2 - 1) * 0.8; }
+      p.tw += p.ts * 0.016;
+      const x = cx + (p.x + Math.sin(p.tw * 0.7 + p.sway) * 0.012) * maxOrbit;
+      const y = cy + p.y * maxOrbit;
+      ctx.globalAlpha = 0.2 + 0.5 * (0.5 + 0.5 * Math.sin(p.tw));
       ctx.beginPath(); ctx.arc(x, y, p.r, 0, Math.PI * 2); ctx.fill();
     });
     ctx.globalAlpha = 1;
@@ -851,9 +862,16 @@ function fxStep() {
   fxDraw();
   fx.raf = requestAnimationFrame(fxStep);
 }
+// Motion is blocked by the Phase 7 Settings > Appearance toggle
+// (body.no-animations) or by the OS reduced-motion preference; the
+// CSS side applies the same pair of conditions (Phase 12).
+function fxMotionBlocked() {
+  return document.body.classList.contains("no-animations")
+    || window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+}
 function fxStart() {
   if (fx.running || document.hidden) return;
-  if (document.body.classList.contains("no-animations")) return;
+  if (fxMotionBlocked()) return;
   fxSeed();
   fx.running = true;
   fx.raf = requestAnimationFrame(fxStep);
@@ -869,7 +887,7 @@ function fxStop() {
 document.addEventListener("visibilitychange", () => { if (document.hidden) fxStop(); else fxStart(); });
 window.addEventListener("resize", () => { if (fx.running) fxSeed(); });
 setInterval(() => {
-  if (document.body.classList.contains("no-animations")) fxStop();
+  if (fxMotionBlocked()) fxStop();
   else fxStart();
 }, 1600);
 fxStart();

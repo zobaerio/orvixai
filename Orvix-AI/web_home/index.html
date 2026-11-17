@@ -9,6 +9,7 @@
 </head>
 <body>
   <canvas id="bgCanvas" aria-hidden="true"></canvas>
+  <div class="aurora" aria-hidden="true"></div>
   <div class="app-shell">
     <header class="topbar">
       <a class="brand" href="#" aria-label="ORVIX Home">
@@ -68,8 +69,11 @@
           <div class="hero-grid"></div>
           <div class="hero-kicker"><span></span> YOUR SMART AI COMPANION <span></span></div>
           <div class="reactor-wrap" id="coreWrap" data-state="idle">
-            <div class="reactor outer"></div><div class="reactor ticks"></div><div class="reactor middle"></div><div class="reactor sweep"></div><div class="reactor inner"></div>
+            <div class="reactor halo"></div><div class="reactor ripple"></div><div class="reactor ripple r2"></div>
+            <div class="reactor outer"></div><div class="reactor ticks"></div><div class="reactor segments"></div><div class="reactor middle"></div><div class="reactor sweep"></div><div class="reactor inner"></div>
+            <div class="reactor ringfast"><i class="sat s1"></i><i class="sat s2"></i></div>
             <div class="reactor orbit"><i></i></div>
+            <div class="reactor orbit2"><i></i></div>
             <canvas class="reactor-particles" id="reactorParticles" width="320" height="320" aria-hidden="true"></canvas>
             <div class="core-logo">▲</div>
           </div>
