@@ -90,6 +90,11 @@ PROVIDERS: dict[str, ProviderSpec] = {
         _m("mistral", "mistral-large-latest", {"reasoning", "coding", "chat", "document"}, 0.004, 2, 128000),
         _m("mistral", "mistral-small-latest", {"chat", "document"}, 0.0004, 1, 128000),
     )),
+    "groq": ProviderSpec("groq", "GROQ_API_KEY", "https://api.groq.com/openai/v1", "openai", (
+        _m("groq", "llama-3.3-70b-versatile", {"chat", "reasoning", "coding", "research", "document", "verification"}, 0.00069, 1, 131072),
+        _m("groq", "llama-3.1-8b-instant", {"chat", "document"}, 0.000065, 1, 131072),
+        _m("groq", "openai/gpt-oss-120b", {"chat", "reasoning", "coding"}, 0.000375, 2, 131072),
+    )),
     "openrouter": ProviderSpec("openrouter", "OPENROUTER_API_KEY", "https://openrouter.ai/api/v1", "openai", (
         _m("openrouter", "meta-llama/llama-3.3-70b-instruct", {"chat", "reasoning", "coding"}, 0.001, 2, 131072),
         _m("openrouter", "mistralai/mistral-7b-instruct", {"chat"}, 0.0002, 1, 32768),

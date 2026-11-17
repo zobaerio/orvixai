@@ -16,7 +16,8 @@ from typing import Callable
 
 from orvix.agent import OrvixAgent
 from orvix.task_planner import classify_plan_step_kind, format_plan_guidance, generate_task_plan, should_generate_task_plan
-from orvix.settings import ENDPOINT_HEALTH_INTERVAL_SECONDS, VOICE_IDS, advance_endpoint_health, auto_configure_from_api_key, effective_voice, endpoint_is_configured, fetch_model_list, get_api_key, initial_endpoint_health, load_settings, probe_endpoint_health, save_settings, set_api_key, test_api_connection, validate_api_base_url, validate_api_key_transport, validate_speech_rate, validate_speech_volume, validate_voice_id, validate_wake_phrase
+from orvix.settings import ENDPOINT_HEALTH_INTERVAL_SECONDS, VOICE_IDS, advance_endpoint_health, auto_configure_from_api_key, effective_voice, endpoint_is_configured, fetch_model_list, get_api_key, initial_endpoint_health, load_settings, probe_endpoint_health, save_settings, set_api_key, test_api_connection, validate_api_base_url, validate_api_key_transport, validate_max_response_tokens, validate_speech_rate, validate_speech_volume, validate_temperature, validate_voice_id, validate_wake_phrase
+from orvix.providers import PROVIDERS as _PROVIDER_SPECS, ProviderClient as _ProviderClient
 from orvix.speech import SpeechEngine, match_wake_phrase
 from orvix.core_states import CoreState
 from orvix.floating_core import FloatingCoreWidget
@@ -148,6 +149,13 @@ class OrvixDesktop:
                 self.settings.get("model", "")))
         self._endpoint_health_stop = threading.Event()
         self._endpoint_health_thread: threading.Thread | None = None
+        # Brain provider health (Command Center Phase 6): results of
+        # the REAL ProviderClient.health() checks the web Model
+        # Management Center requests, keyed by provider id, values
+        # "checking" / "reachable" / "unreachable". Empty at startup
+        # — a provider with no entry has never been checked, and the
+        # bridge payload says exactly that ("not_checked").
+        self._provider_health_results: dict[str, str] = {}
         self._speech_active = threading.Event()
         self._hero_core: FloatingCoreWidget | None = None
         self._hud_core: FloatingCoreWidget | None = None
@@ -3786,6 +3794,62 @@ class OrvixDesktop:
         except Exception:
             pass
 
+    # -- Model Management Center (Command Center Phase 6) -----------
+
+    def _provider_health_client(self, provider_id: str):
+        """A real registry client for one Brain provider.
+
+        Keys come from the environment only, exactly as the Brain
+        path builds its clients (orvix.providers.build_clients);
+        nothing is read from Settings and nothing is logged. Tests
+        substitute this method on the instance with a fake client.
+        """
+        return _ProviderClient(_PROVIDER_SPECS[provider_id])
+
+    def _web_provider_health(self) -> dict:
+        """Last-check Brain provider health for the WebView bridge.
+
+        A copy of the results recorded by
+        :meth:`_test_provider_from_web` — {provider id: "checking" /
+        "reachable" / "unreachable"} — and nothing else: a provider
+        absent from this dict has never had a health check run, and
+        the bridge payload reports it as "not_checked". This is the
+        established accessor pattern: the bridge reads optional app
+        capabilities defensively through a ``_web_*`` method.
+        """
+        results = getattr(self, "_provider_health_results", None)
+        return dict(results) if isinstance(results, dict) else {}
+
+    def _test_provider_from_web(self, provider_id) -> bool | None:
+        """Bridge entry point for the web Models page Test button.
+
+        Runs on the Tk/event thread (the bridge only enqueues it),
+        like every other bridge action. Builds the provider's real
+        registry client and runs its REAL ``health()`` check — for
+        ollama that is the keyless local /models check; for keyed
+        providers an unconfigured one honestly reports unreachable
+        (health() returns False without a key, it never fakes a
+        success). The verdict is recorded for the payload BEFORE
+        the check runs the state is "checking", so a state push
+        during a slow check shows that instead of a stale verdict.
+        Returns True/False for the check, or None for an unknown
+        provider id (nothing is recorded then).
+        """
+        pid = str(provider_id or "").strip().lower()
+        if pid not in _PROVIDER_SPECS:
+            return None
+        results = getattr(self, "_provider_health_results", None)
+        if not isinstance(results, dict):
+            results = {}
+            self._provider_health_results = results
+        results[pid] = "checking"
+        try:
+            ok = bool(self._provider_health_client(pid).health())
+        except Exception:
+            ok = False
+        results[pid] = "reachable" if ok else "unreachable"
+        return ok
+
     def _open_notifications(self) -> None:
         """Tk parity for the Notification Center: a simple window
         over the same persistent store the web bell shows — newest
@@ -4587,6 +4651,22 @@ class OrvixDesktop:
         load_models_button = ttk.Button(ai_model_tab, text="Load models", command=load_models)
         load_models_button.pack(anchor="w", pady=(2, 4))
 
+        # -- AI Model tab: generation controls (Phase 6) ----------
+        # Temperature + response-token cap for the desktop agent's
+        # requests. Both are plain text controls in the tab's
+        # existing style; Save Settings validates / clamps them via
+        # orvix.settings (validate_temperature /
+        # validate_max_response_tokens) into the normal save path.
+        tk.Label(ai_model_tab, text="Temperature (0.0–2.0; lower is more focused, higher more creative)", bg=BG, fg="#cbd7e8", font=("Segoe UI Semibold", 9)).pack(anchor="w", pady=(12, 5))
+        temperature_var = tk.StringVar(value=str(self.settings.get("temperature", 0.4)))
+        temperature_combo = ttk.Combobox(ai_model_tab, textvariable=temperature_var, values=["0.0", "0.2", "0.4", "0.7", "1.0", "1.5", "2.0"])
+        temperature_combo.pack(fill="x", ipady=4)
+
+        tk.Label(ai_model_tab, text="Response limit (max tokens per reply, 1–8192)", bg=BG, fg="#cbd7e8", font=("Segoe UI Semibold", 9)).pack(anchor="w", pady=(12, 5))
+        max_tokens_var = tk.StringVar(value=str(self.settings.get("max_response_tokens", 1024)))
+        ttk.Entry(ai_model_tab, textvariable=max_tokens_var).pack(fill="x", ipady=4)
+        tk.Label(ai_model_tab, text="These apply to the desktop agent's chat requests. Out-of-range values are clamped to the nearest bound when you save.", bg=BG, fg=MUTED, font=("Segoe UI", 8), wraplength=540, justify="left").pack(fill="x", pady=(5, 2))
+
         tk.Label(voice_tab, text="Speech recognition language", bg=BG, fg="#cbd7e8", font=("Segoe UI Semibold", 9)).pack(anchor="w", pady=(12, 5))
         lang_var = tk.StringVar(value=str(self.settings.get("speech_language", "bn-BD")))
         lang_combo = ttk.Combobox(voice_tab, textvariable=lang_var, state="readonly", values=["bn-BD", "en-US", "en-GB", "hi-IN"])
@@ -4833,6 +4913,8 @@ class OrvixDesktop:
             new["character_voice_maya"] = character_voice_vars["maya"].get()
             new["web_home_animations"] = bool(animations_var.get())
             try:
+                new["temperature"] = validate_temperature(temperature_var.get())
+                new["max_response_tokens"] = validate_max_response_tokens(max_tokens_var.get())
                 new["speech_rate"] = validate_speech_rate(rate_var.get())
                 new["speech_volume"] = validate_speech_volume(volume_var.get())
                 new["wake_phrase"] = validate_wake_phrase(wake_var.get())

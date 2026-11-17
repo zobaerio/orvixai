@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import ipaddress
 import json
+import math
 import os
 import re
 import shutil
@@ -47,6 +48,18 @@ KEYRING_SERVICE = "Zobaerio.OrvixDesktop"
 DEFAULTS: dict[str, Any] = {
     "api_base_url": "http://localhost:11434/v1",
     "model": "qwen2.5:3b",
+    # Model generation controls (Command Center Phase 6): the
+    # desktop agent's request temperature and response-token cap.
+    # The defaults reproduce the behaviour shipped before these
+    # were configurable — temperature was hard-coded at 0.4 in the
+    # agent payload, and 1024 is the token cap the provider layer
+    # (orvix.providers.ProviderClient.chat / the Brain router) has
+    # always used as its default. Validated / clamped by
+    # validate_temperature / validate_max_response_tokens below;
+    # resolved for request payloads by effective_temperature /
+    # effective_max_response_tokens, which never raise.
+    "temperature": 0.4,
+    "max_response_tokens": 1024,
     "speech_language": "bn-BD",
     "voice": "bn-BD-NabanitaNeural",
     "speak_replies": True,
@@ -280,6 +293,102 @@ def validate_wake_phrase(value: str) -> str:
     if any(not (char.isalpha() or char in " '") for char in text):
         raise ValueError("Wake phrase may contain only letters, spaces and apostrophes.")
     return text
+
+
+TEMPERATURE_MIN = 0.0
+TEMPERATURE_MAX = 2.0
+TEMPERATURE_DEFAULT = 0.4
+
+#: Bounds for the response-token cap. The minimum is 1 (a cap must
+#: allow at least one token); the maximum is 8192 — well above the
+#: provider layer's 1024-token default and the vision calls' 700,
+#: and at the top of what the registry models commonly accept as an
+#: output cap, so a larger typed value is a mistake, not a need.
+MAX_RESPONSE_TOKENS_MIN = 1
+MAX_RESPONSE_TOKENS_MAX = 8192
+MAX_RESPONSE_TOKENS_DEFAULT = 1024
+
+
+def validate_temperature(value) -> float:
+    """Validate the agent request temperature, clamped to 0.0–2.0.
+
+    Accepts a number or a numeric string (the Settings field is a
+    text control). Out-of-range numbers are clamped to the nearest
+    bound — a temperature is a preference, not a safety limit, so
+    2.5 means "as creative as allowed", not an error. Anything that
+    is not a finite number at all (text, a boolean, NaN, infinity,
+    None) raises ValueError, in the style of the other validators.
+    """
+    if isinstance(value, bool):
+        raise ValueError("Temperature must be a number between 0.0 and 2.0.")
+    try:
+        number = float(str(value).strip()) if isinstance(value, str) else float(value)
+    except (TypeError, ValueError):
+        raise ValueError("Temperature must be a number between 0.0 and 2.0.") from None
+    if not math.isfinite(number):
+        raise ValueError("Temperature must be a number between 0.0 and 2.0.")
+    return min(TEMPERATURE_MAX, max(TEMPERATURE_MIN, number))
+
+
+def validate_max_response_tokens(value) -> int:
+    """Validate the response-token cap, clamped to 1–8192.
+
+    Accepts an int, an integral float, or a digit string (the
+    Settings field is a text control). Out-of-range values are
+    clamped to the nearest bound, like the temperature. Anything
+    that is not a whole number at all (text, a boolean, a fraction,
+    NaN, None) raises ValueError.
+    """
+    label = (
+        f"Response limit must be a whole number between "
+        f"{MAX_RESPONSE_TOKENS_MIN} and {MAX_RESPONSE_TOKENS_MAX} tokens."
+    )
+    if isinstance(value, bool):
+        raise ValueError(label)
+    if isinstance(value, float):
+        if not math.isfinite(value) or not value.is_integer():
+            raise ValueError(label)
+        number = int(value)
+    elif isinstance(value, int):
+        number = value
+    elif isinstance(value, str):
+        try:
+            number = int(value.strip(), 10)
+        except ValueError:
+            raise ValueError(label) from None
+    else:
+        raise ValueError(label)
+    return min(MAX_RESPONSE_TOKENS_MAX, max(MAX_RESPONSE_TOKENS_MIN, number))
+
+
+def effective_temperature(settings: dict[str, Any] | None) -> float:
+    """The temperature a request payload should use; never raises.
+
+    The stored value wins when it validates (clamped); a missing
+    or invalid stored value falls back to the shipped default —
+    existing saved settings predate this key and must keep working
+    exactly as before.
+    """
+    data = settings if isinstance(settings, dict) else {}
+    try:
+        return validate_temperature(data.get("temperature", TEMPERATURE_DEFAULT))
+    except ValueError:
+        return TEMPERATURE_DEFAULT
+
+
+def effective_max_response_tokens(settings: dict[str, Any] | None) -> int:
+    """The response-token cap a request payload should use.
+
+    Same contract as :func:`effective_temperature`: the stored
+    value wins when it validates (clamped); a missing or invalid
+    stored value falls back to the provider layer's default.
+    """
+    data = settings if isinstance(settings, dict) else {}
+    try:
+        return validate_max_response_tokens(
+            data.get("max_response_tokens", MAX_RESPONSE_TOKENS_DEFAULT))
+    except ValueError:
+        return MAX_RESPONSE_TOKENS_DEFAULT
 
 
 def auto_configure_from_api_key(api_key: str, *, timeout: float = 8.0) -> dict[str, str]:

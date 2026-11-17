@@ -12,7 +12,7 @@ from urllib.parse import urlparse
 import requests
 
 from . import automation
-from .settings import get_api_key, is_local_api_endpoint, validate_api_key_transport
+from .settings import effective_max_response_tokens, effective_temperature, get_api_key, is_local_api_endpoint, validate_api_key_transport
 from .safe_errors import safe_tool_error
 from .vision import analyze_screen
 from .camera_vision import analyze_camera
@@ -764,7 +764,17 @@ class OrvixAgent:
                 turn_result = _fetch_model_message(
                     url,
                     headers=headers,
-                    payload={"model": model, "messages": messages, "tools": TOOLS, "tool_choice": "auto", "temperature": 0.4},
+                    # Temperature / response cap come from Settings
+                    # (Command Center Phase 6): the resolvers clamp
+                    # to the validated ranges and fall back to the
+                    # previously hard-coded 0.4 / the provider
+                    # layer's 1024-token default when the stored
+                    # values are missing or invalid, so behaviour is
+                    # unchanged until the user edits them. The
+                    # vision / planner call sites keep their own
+                    # hard-coded 0.2 — they are separate requests
+                    # with their own tuning, out of this scope.
+                    payload={"model": model, "messages": messages, "tools": TOOLS, "tool_choice": "auto", "temperature": effective_temperature(self.settings), "max_tokens": effective_max_response_tokens(self.settings)},
                     timeout=(10, 45),
                     cancel_event=cancel_event,
                     progress=report,

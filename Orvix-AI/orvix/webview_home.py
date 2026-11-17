@@ -42,6 +42,7 @@ from .home_data import (
     quick_action_tiles,
 )
 from .settings import ENDPOINT_HEALTH_STATES
+from .providers import PROVIDERS, configured_providers
 from .hud_data import build_hud_panels, build_task_entries, task_current_step
 from .memory import CATEGORIES as MEMORY_CATEGORIES
 from .ui_formatters import format_message_time
@@ -242,6 +243,23 @@ MAX_PAYLOAD_NOTIFICATIONS = 20
 # stored entry — so the page can honestly say "latest 100 of N"
 # instead of pretending the capped list is everything.
 MAX_PAYLOAD_MEMORY_ENTRIES = 100
+
+# Provider health states for the Model Management Center (Command
+# Center Phase 6). A provider's health is "not_checked" until a
+# real ProviderClient.health() check has actually run for it in
+# this process — configuration alone never produces a verdict, and
+# no state here ever claims a provider is "connected".
+PROVIDER_HEALTH_NOT_CHECKED = "not_checked"
+PROVIDER_HEALTH_CHECKING = "checking"
+PROVIDER_HEALTH_REACHABLE = "reachable"
+PROVIDER_HEALTH_UNREACHABLE = "unreachable"
+
+PROVIDER_HEALTH_STATES: tuple = (
+    PROVIDER_HEALTH_NOT_CHECKED,
+    PROVIDER_HEALTH_CHECKING,
+    PROVIDER_HEALTH_REACHABLE,
+    PROVIDER_HEALTH_UNREACHABLE,
+)
 
 # The Tk activity panel's placeholder line before the first real
 # command: furniture, not an activity event, so it never reaches
@@ -602,6 +620,114 @@ def _memory_payload(app, query=""):
     }
 
 
+def _provider_health_map(app, explicit=None) -> dict:
+    """Last-check provider health results as {provider_id: state}.
+
+    Sources, in order, all read defensively in the same style the
+    bridge already uses for optional app capabilities:
+
+    1. an explicit mapping (tests, or a caller that already holds
+       the results);
+    2. an app-provided accessor (``_web_provider_health`` — the
+       real desktop app supplies one over the results its
+       ``_test_provider_from_web`` handler recorded when the
+       bridge's ``testProvider`` method enqueued a real
+       ``ProviderClient.health()`` check);
+    3. a plain app attribute (``provider_health`` /
+       ``_provider_health_results`` — minimal embeddings);
+    4. the Control Center snapshot's per-model ``healthy`` flags
+       (the snapshot / HealthMonitor pattern: True/False from a
+       check that ran, None — absent here — when none has).
+
+    Values may be state strings ("reachable" / "unreachable" /
+    "checking") or booleans from a health check (True → reachable,
+    False → unreachable). Anything else is ignored. An empty result
+    means no check has run: every provider then reports
+    "not_checked", never a guessed verdict. No failure raises.
+    """
+    merged: dict = {}
+
+    def absorb(candidate):
+        if not isinstance(candidate, dict):
+            return
+        for key, value in candidate.items():
+            provider_id = str(key or "").strip().lower()
+            if provider_id not in PROVIDERS:
+                continue
+            if value is True:
+                merged[provider_id] = PROVIDER_HEALTH_REACHABLE
+            elif value is False:
+                merged[provider_id] = PROVIDER_HEALTH_UNREACHABLE
+            elif isinstance(value, str) and value in PROVIDER_HEALTH_STATES:
+                merged[provider_id] = value
+
+    # Lowest precedence first: the snapshot's recorded flags, then
+    # a plain attribute, then the app's last-check accessor, then
+    # an explicit mapping — later (more specific) sources win.
+    snapshot_fn = getattr(app, "_hud_control_center_snapshot", None)
+    if callable(snapshot_fn):
+        try:
+            snapshot = snapshot_fn()
+        except Exception:
+            snapshot = None
+        models = snapshot.get("models") if isinstance(snapshot, dict) else None
+        if isinstance(models, list):
+            absorb({str(row.get("provider") or ""): row.get("healthy")
+                    for row in models
+                    if isinstance(row, dict) and row.get("healthy") is not None})
+    for attr in ("provider_health", "_provider_health_results"):
+        absorb(getattr(app, attr, None))
+    accessor = getattr(app, "_web_provider_health", None)
+    if callable(accessor):
+        try:
+            absorb(accessor())
+        except Exception:
+            pass
+    absorb(explicit)
+    return merged
+
+
+def _providers_payload(app, provider_env=None, provider_health=None) -> list:
+    """Model Management Center block for the payload.
+
+    One entry per Brain registry provider (orvix.providers
+    PROVIDERS), in registry order: its id and registry name, a
+    ``configured`` boolean (the provider's environment key is
+    present — for the keyless local provider, configured means
+    "no key needed"; the key itself NEVER appears, only the
+    boolean), a ``keyless`` flag, its models with their real
+    capability sets from the registry, and its health state —
+    "not_checked" until a real health check has run (see
+    :func:`_provider_health_map`). ``provider_env`` is the
+    environment mapping the configured flags are read from
+    (os.environ in production; a fake mapping in tests, exactly
+    like configured_providers itself accepts).
+    """
+    try:
+        configured = configured_providers(provider_env)
+    except Exception:
+        configured = {}
+    health = _provider_health_map(app, explicit=provider_health)
+    entries: list = []
+    for provider_id, spec in PROVIDERS.items():
+        models = []
+        for info in spec.models:
+            models.append({
+                "name": str(info.model),
+                "capabilities": sorted(str(cap) for cap in info.capabilities),
+                "contextTokens": int(info.context_tokens),
+            })
+        entries.append({
+            "id": str(provider_id),
+            "name": str(spec.name),
+            "configured": bool(configured.get(provider_id, False)),
+            "keyless": spec.env_key is None,
+            "health": health.get(provider_id, PROVIDER_HEALTH_NOT_CHECKED),
+            "models": models,
+        })
+    return entries
+
+
 def _recent_task_records(app) -> list:
     """Newest-first TaskStore records from the app, or [] when the app
     has no readable task store. Any failure yields an empty list: the
@@ -713,7 +839,8 @@ def _top_processes_payload(stats) -> list:
     return result
 
 
-def build_state_payload(app, stats=None, memory_query=None) -> dict:
+def build_state_payload(app, stats=None, memory_query=None,
+                        provider_env=None, provider_health=None) -> dict:
     """JSON-serializable snapshot of real app state for the web page.
 
     Attributes are read defensively (``getattr`` with defaults) so a
@@ -727,6 +854,12 @@ def build_state_payload(app, stats=None, memory_query=None) -> dict:
     payload's memory block carries the store's search results for
     it instead of the full latest entries. It is a view filter
     only — it never changes what the store holds.
+
+    ``provider_env`` / ``provider_health`` (Command Center Phase 6)
+    are the environment mapping and last-check health results the
+    providers block is built from; both default to the real
+    sources (os.environ, and the app's recorded check results via
+    :func:`_provider_health_map`).
     """
     if stats is None:
         stats = collect_system_stats()
@@ -786,6 +919,14 @@ def build_state_payload(app, stats=None, memory_query=None) -> dict:
         # query when one is set; None when the app has no readable
         # store (the page then shows its honest empty state).
         "memory": _memory_payload(app, query=memory_query or ""),
+        # Command Center Phase 6 (additive): the Model Management
+        # Center block — one entry per Brain registry provider
+        # (id, name, configured boolean only — never any key
+        # material — keyless flag, models with capability sets,
+        # and health: "not_checked" until a real health() check
+        # has run, then "reachable" / "unreachable").
+        "providers": _providers_payload(
+            app, provider_env=provider_env, provider_health=provider_health),
         "stats": {
             "cpu": stats.cpu_percent,
             "ram": stats.ram_percent,
@@ -1071,6 +1212,27 @@ class OrvixWebHomeApi:
         except Exception as exc:
             return {"ok": False, "error": type(exc).__name__}
 
+    def testProvider(self, providerId=None):
+        try:
+            # Model Management Center (Command Center Phase 6): run
+            # ONE provider's real ProviderClient.health() check.
+            # The check itself is network work, so it follows the
+            # same enqueue discipline as every other bridge action:
+            # nothing is probed from this bridge thread — the
+            # enqueued app method (_test_provider_from_web) builds
+            # the registry client, runs health() (for ollama that
+            # is the keyless local /models check), and records the
+            # result the app's _web_provider_health accessor then
+            # supplies to the next state payload. An unknown
+            # provider id is rejected here and enqueues nothing.
+            provider_id = str(providerId or "").strip().lower()
+            if provider_id not in PROVIDERS:
+                return {"ok": False, "error": "unknown provider"}
+            self._enqueue("_test_provider_from_web", (provider_id,))
+            return {"ok": True}
+        except Exception as exc:
+            return {"ok": False, "error": type(exc).__name__}
+
     def memoryClear(self):
         try:
             # Clear ALL memory entries (Command Center Phase 5).
@@ -1336,6 +1498,7 @@ __all__ = [
     "MAX_PAYLOAD_MEMORY_ENTRIES",
     "MAX_PAYLOAD_NOTIFICATIONS",
     "MAX_PAYLOAD_TASKS",
+    "PROVIDER_HEALTH_STATES",
     "OrvixWebHomeApi",
     "WebViewHome",
     "build_state_payload",

@@ -642,6 +642,7 @@ window.orvixPushState = function (state) {
   renderNotifications(state);
   renderEmergency(state);
   renderMemory(state);
+  renderModels(state);
 
   if (state.character) {
     const key = String(state.character).toUpperCase();
@@ -870,6 +871,132 @@ function renderMemory(state) {
       section.appendChild(row);
     });
     list.appendChild(section);
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Model Management Center (Command Center Phase 6): the Models nav
+// destination renders ONLY from the payload — the providers block
+// (the Brain registry: id, name, a configured BOOLEAN, models with
+// capability sets, and health) plus the model block for the desktop
+// endpoint section. Health is "not_checked" until a real health
+// check has run in the desktop app; the page never upgrades it from
+// configuration alone and never sees any key material (the payload
+// carries booleans only). A Test button click sends testProvider
+// through the bridge, which enqueues the real check on the app
+// side; the card then shows "checking" — a check the user just
+// requested IS in flight — until the next payload carries the
+// app's recorded verdict. Standalone (no bridge) the view shows
+// the honest not-connected presentation and Test buttons are
+// disabled.
+// ---------------------------------------------------------------------------
+const PROVIDER_DISPLAY_NAMES = {
+  openai: "OpenAI", anthropic: "Anthropic", gemini: "Gemini",
+  deepseek: "DeepSeek", xai: "xAI", mistral: "Mistral",
+  openrouter: "OpenRouter", ollama: "Ollama", groq: "Groq"
+};
+const PROVIDER_HEALTH_TEXT = {
+  "not_checked": "Not checked",
+  "checking": "Checking…",
+  "reachable": "Reachable",
+  "unreachable": "Unreachable"
+};
+const providerTestsPending = new Set();
+function providerHealthKey(provider) {
+  if (provider && providerTestsPending.has(String(provider.id || ""))) return "checking";
+  const health = provider && provider.health;
+  return PROVIDER_HEALTH_TEXT[health] ? health : "not_checked";
+}
+function renderModels(state) {
+  const grid = $("#providerGrid");
+  const empty = $("#providersEmpty");
+  if (!grid || !empty) return;
+  grid.replaceChildren();
+  // Desktop endpoint section: the payload's model block (the one
+  // configured endpoint + model, with its probe-backed health when
+  // a probe verdict exists — otherwise the honest not-checked /
+  // configuration wording, never a claim of reachability).
+  const model = connected && state && state.model ? state.model : null;
+  const endpointUrl = $("#modelsEndpointUrl");
+  const endpointModel = $("#modelsEndpointModel");
+  const endpointHealth = $("#modelsEndpointHealth");
+  if (endpointUrl) endpointUrl.textContent = model && model.endpoint ? String(model.endpoint) : "—";
+  if (endpointModel) endpointModel.textContent = model && model.name ? String(model.name) : "—";
+  if (endpointHealth) {
+    if (!connected) endpointHealth.textContent = "Not connected";
+    else if (model && MODEL_HEALTH_PILL_TEXT[model.health]) endpointHealth.textContent = PROVIDER_HEALTH_TEXT[model.health] || "Not checked";
+    else if (model && model.health === "checking") endpointHealth.textContent = "Checking…";
+    else if (model && model.health === "not_configured") endpointHealth.textContent = "Not configured";
+    else endpointHealth.textContent = "Not checked";
+  }
+  const providers = connected && state && Array.isArray(state.providers) ? state.providers : [];
+  // A pending test whose verdict has arrived is no longer pending.
+  providers.forEach((provider) => {
+    if (provider && provider.health && provider.health !== "not_checked") {
+      providerTestsPending.delete(String(provider.id || ""));
+    }
+  });
+  if (!providers.length) {
+    empty.textContent = connected
+      ? "No providers available"
+      : "Not connected — desktop bridge required.";
+    empty.classList.remove("hidden");
+    return;
+  }
+  empty.classList.add("hidden");
+  providers.forEach((provider) => {
+    if (!provider || !provider.id) return;
+    const card = document.createElement("article");
+    card.className = "provider-card";
+    const head = document.createElement("div");
+    head.className = "provider-card-head";
+    const name = document.createElement("b");
+    name.className = "provider-name";
+    name.textContent = PROVIDER_DISPLAY_NAMES[provider.id] || String(provider.name || provider.id);
+    const configured = document.createElement("span");
+    configured.className = provider.configured ? "provider-configured" : "provider-not-configured";
+    configured.textContent = provider.keyless
+      ? (provider.configured ? "Local — no key needed" : "Not configured")
+      : (provider.configured ? "Configured" : "Not configured");
+    head.append(name, configured);
+    card.appendChild(head);
+    const healthKey = providerHealthKey(provider);
+    const health = document.createElement("p");
+    health.className = "provider-health provider-health-" + healthKey;
+    health.textContent = "Health: " + PROVIDER_HEALTH_TEXT[healthKey];
+    card.appendChild(health);
+    const models = Array.isArray(provider.models) ? provider.models : [];
+    if (!models.length) {
+      const none = document.createElement("p");
+      none.className = "provider-models-empty";
+      none.textContent = "No models registered.";
+      card.appendChild(none);
+    }
+    models.forEach((entry) => {
+      if (!entry || !entry.name) return;
+      const row = document.createElement("div");
+      row.className = "provider-model";
+      const modelName = document.createElement("span");
+      modelName.className = "provider-model-name";
+      modelName.textContent = String(entry.name);
+      row.appendChild(modelName);
+      const caps = Array.isArray(entry.capabilities) ? entry.capabilities : [];
+      caps.forEach((cap) => {
+        const chip = document.createElement("span");
+        chip.className = "capability-chip";
+        chip.textContent = String(cap);
+        row.appendChild(chip);
+      });
+      card.appendChild(row);
+    });
+    const test = document.createElement("button");
+    test.type = "button";
+    test.className = "provider-test-button";
+    test.textContent = healthKey === "checking" ? "Checking…" : "Test";
+    test.dataset.providerId = String(provider.id);
+    test.disabled = !connected || healthKey === "checking";
+    card.appendChild(test);
+    grid.appendChild(card);
   });
 }
 
@@ -1123,6 +1250,39 @@ $("#memoryClearConfirmButton").addEventListener("click", () => {
   toast("Not connected — desktop bridge required.");
 });
 
+// Model Management actions (Phase 6). One delegated listener for
+// the provider grid: a Test button carries the provider id the
+// payload sent; the bridge testProvider method enqueues the real
+// health check on the app side, and the card's verdict refreshes
+// from the next payload — the result is never shown locally first,
+// so the page cannot claim a reachability the check did not find.
+// Until that payload arrives the provider is marked pending, which
+// renderModels shows as "Checking…" (the requested check really
+// is in flight).
+$("#providerGrid").addEventListener("click", (event) => {
+  const target = event.target;
+  const button = target && typeof target.closest === "function"
+    ? target.closest(".provider-test-button") : null;
+  if (!button) return;
+  const providerId = button.dataset.providerId || "";
+  if (!providerId) { toast("This provider cannot be tested from here."); return; }
+  if (connected && callBridge("testProvider", [providerId])) {
+    providerTestsPending.add(providerId);
+    renderModels(lastState);
+    toast("Provider test requested.");
+    return;
+  }
+  toast("Not connected — desktop bridge required.");
+});
+
+// Desktop-endpoint section: endpoint / key editing lives in
+// Settings, opened through the same console path as the home model
+// panel's Configure button; standalone it shows the Settings view.
+$("#modelsSettingsButton").addEventListener("click", () => {
+  if (connected && bridgeApi && typeof bridgeApi.openConsole === "function") { callBridge("openConsole", []); return; }
+  showTab("settings");
+});
+
 // Standalone fallback only: browser speech recognition fills the composer.
 // In the desktop app the mic routes to the app's own speech engine instead.
 let recognition = null;
@@ -1267,25 +1427,36 @@ const tabContent = {
 function showTab(tab) {
   const tasksView = $("#tasksView");
   const memoryView = $("#memoryView");
+  const modelsView = $("#modelsView");
   if (tab === "home") {
     $("#homeView").classList.remove("hidden"); $("#secondaryView").classList.add("hidden");
     if (tasksView) tasksView.classList.add("hidden");
     if (memoryView) memoryView.classList.add("hidden");
+    if (modelsView) modelsView.classList.add("hidden");
   } else if (tab === "tasks") {
     $("#homeView").classList.add("hidden"); $("#secondaryView").classList.add("hidden");
     if (tasksView) tasksView.classList.remove("hidden");
     if (memoryView) memoryView.classList.add("hidden");
+    if (modelsView) modelsView.classList.add("hidden");
     renderTasks();
   } else if (tab === "memory") {
     $("#homeView").classList.add("hidden"); $("#secondaryView").classList.add("hidden");
     if (tasksView) tasksView.classList.add("hidden");
     if (memoryView) memoryView.classList.remove("hidden");
+    if (modelsView) modelsView.classList.add("hidden");
     renderMemory(lastState);
+  } else if (tab === "models") {
+    $("#homeView").classList.add("hidden"); $("#secondaryView").classList.add("hidden");
+    if (tasksView) tasksView.classList.add("hidden");
+    if (memoryView) memoryView.classList.add("hidden");
+    if (modelsView) modelsView.classList.remove("hidden");
+    renderModels(lastState);
   } else {
     const data = tabContent[tab] || tabContent.tools;
     $("#homeView").classList.add("hidden"); $("#secondaryView").classList.remove("hidden");
     if (tasksView) tasksView.classList.add("hidden");
     if (memoryView) memoryView.classList.add("hidden");
+    if (modelsView) modelsView.classList.add("hidden");
     $("#secondaryTitle").textContent = data.title; $("#secondaryDescription").textContent = data.desc;
     $("#secondaryCards").replaceChildren();
     data.cards.forEach(([title, desc]) => {
@@ -1337,6 +1508,7 @@ $$("[data-tab='tools']").forEach(button => button.addEventListener("click", () =
 $("#backHome").addEventListener("click", () => showTab("home"));
 $("#tasksBackHome").addEventListener("click", () => showTab("home"));
 $("#memoryBackHome").addEventListener("click", () => showTab("home"));
+$("#modelsBackHome").addEventListener("click", () => showTab("home"));
 
 // Initial state: not connected until the bridge proves otherwise, and an
 // empty performance strip (all bars at 0 height, caption shows dashes).
@@ -1352,6 +1524,7 @@ renderActivity(null);
 renderNotifications(null);
 renderEmergency(null);
 renderMemory(null);
+renderModels(null);
 renderPerf();
 tryConnect();
 

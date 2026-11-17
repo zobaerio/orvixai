@@ -22,6 +22,7 @@
         <button class="nav-item" data-tab="tasks">▤ <span>Tasks</span></button>
         <button class="nav-item" data-tab="voice">🎙 <span>Voice</span></button>
         <button class="nav-item" data-tab="memory">◈ <span>Memory</span></button>
+        <button class="nav-item" data-tab="models">♧ <span>Models</span></button>
         <button class="nav-item" data-tab="settings">⚙ <span>Settings</span></button>
         <button class="nav-item" data-tab="about">ⓘ <span>About</span></button>
       </nav>
@@ -217,6 +218,23 @@
           <button class="memory-clear-cancel-button" id="memoryClearCancel">Cancel</button>
         </div>
       </div>
+    </section>
+
+    <section class="secondary-view panel hidden" id="modelsView">
+      <div class="panel-heading"><h2>Model Management</h2><button class="text-button" id="modelsBackHome">← Back to Home</button></div>
+      <p>AI providers registered in the desktop app's Brain, with the models and capabilities the registry carries. A provider is shown as configured only when its environment key is present (the local Ollama provider needs no key) — keys themselves are never shown here. Health is “Not checked” until you run a provider's Test button, which runs its real connection check in the desktop app.</p>
+      <div class="models-endpoint" id="modelsEndpoint">
+        <h3>Desktop endpoint</h3>
+        <div class="models-endpoint-rows">
+          <div class="detail-row"><span>Endpoint</span><b id="modelsEndpointUrl">—</b></div>
+          <div class="detail-row"><span>Model</span><b id="modelsEndpointModel">—</b></div>
+          <div class="detail-row"><span>Health</span><b id="modelsEndpointHealth">Not checked</b></div>
+        </div>
+        <p class="models-endpoint-note">Endpoint and key editing lives in Settings — the desktop console's Settings &gt; AI Model tab, which also holds the temperature and response-limit controls.</p>
+        <button class="outline-button" id="modelsSettingsButton">Open Settings →</button>
+      </div>
+      <div class="provider-grid" id="providerGrid"></div>
+      <p class="provider-empty" id="providersEmpty">No providers available</p>
     </section>
 
     <section class="secondary-view panel hidden" id="secondaryView">
