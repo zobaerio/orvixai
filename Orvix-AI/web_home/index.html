@@ -23,6 +23,7 @@
         <button class="nav-item" data-tab="voice">🎙 <span>Voice</span></button>
         <button class="nav-item" data-tab="memory">◈ <span>Memory</span></button>
         <button class="nav-item" data-tab="models">♧ <span>Models</span></button>
+        <button class="nav-item" data-tab="performance">▥ <span>Performance</span></button>
         <button class="nav-item" data-tab="settings">⚙ <span>Settings</span></button>
         <button class="nav-item" data-tab="about">ⓘ <span>About</span></button>
       </nav>
@@ -235,6 +236,49 @@
       </div>
       <div class="provider-grid" id="providerGrid"></div>
       <p class="provider-empty" id="providersEmpty">No providers available</p>
+    </section>
+
+    <section class="secondary-view panel hidden" id="performanceView">
+      <div class="panel-heading"><h2>Live Performance</h2><button class="text-button" id="performanceBackHome">← Back to Home</button></div>
+      <p>Real performance history recorded by the desktop bridge from this session, at its normal push cadence. Charts show only what has actually been recorded — a time window becomes available once enough history exists for it.</p>
+      <div class="perf-window-row">
+        <span class="perf-window-label">Window</span>
+        <button class="perf-window-button" id="perfWindow60" data-window="60">1 min</button>
+        <button class="perf-window-button" id="perfWindow300" data-window="300">5 min</button>
+        <button class="perf-window-button" id="perfWindow900" data-window="900">15 min</button>
+        <span class="perf-history-note" id="perfHistoryNote">No history recorded yet.</span>
+      </div>
+      <div class="perf-charts-grid">
+        <div class="perf-chart-card">
+          <div class="perf-chart-heading"><b>CPU</b><span id="perfCpuCaption">—</span></div>
+          <div class="performance-chart perf-page-chart" id="perfCpuChart" aria-label="CPU performance chart"></div>
+        </div>
+        <div class="perf-chart-card">
+          <div class="perf-chart-heading"><b>RAM</b><span id="perfRamCaption">—</span></div>
+          <div class="performance-chart perf-page-chart" id="perfRamChart" aria-label="RAM performance chart"></div>
+        </div>
+        <div class="perf-chart-card">
+          <div class="perf-chart-heading"><b>Network</b><span id="perfNetworkCaption">—</span></div>
+          <div class="performance-chart perf-page-chart" id="perfNetworkChart" aria-label="Network performance chart — download and upload"></div>
+          <div class="performance-labels"><span class="perf-legend"><i class="perf-dot cpu"></i>Download</span><span class="perf-legend"><i class="perf-dot ram"></i>Upload</span></div>
+        </div>
+        <div class="perf-chart-card">
+          <div class="perf-chart-heading"><b>Disk</b><span id="perfDiskCaption">—</span></div>
+          <div class="performance-chart perf-page-chart" id="perfDiskChart" aria-label="Disk performance chart — read and write"></div>
+          <div class="performance-labels"><span class="perf-legend"><i class="perf-dot cpu"></i>Read</span><span class="perf-legend"><i class="perf-dot ram"></i>Write</span></div>
+        </div>
+      </div>
+      <div class="perf-details">
+        <div class="detail-row"><span>ORVIX App</span><b id="perfOwnValue">N/A</b></div>
+        <div class="detail-row"><span>Temperature</span><b id="perfTemperatureValue">N/A on Windows</b></div>
+        <div class="detail-row"><span>GPU</span><b id="perfGpuValue">N/A on Windows</b></div>
+      </div>
+      <h3 class="perf-processes-heading">Top Processes</h3>
+      <table class="perf-processes-table" id="perfProcessesTable">
+        <thead><tr><th>Name</th><th>CPU %</th><th>Memory %</th></tr></thead>
+        <tbody id="perfProcessesBody"></tbody>
+      </table>
+      <p class="perf-processes-empty" id="perfProcessesEmpty">No process data yet</p>
     </section>
 
     <section class="secondary-view panel hidden" id="secondaryView">
