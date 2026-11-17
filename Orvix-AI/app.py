@@ -88,6 +88,14 @@ class OrvixDesktop:
         self.settings = load_settings()
         self.speech = SpeechEngine()
         self.events: queue.Queue = queue.Queue()
+        # Timestamped activity feed for the WebView home (Command
+        # Center Phase 2): _push_activity maintains it alongside the
+        # Tk panel's recent_activity strings. Each entry is
+        # {"text": ..., "time": "HH:MM"} stamped when the activity
+        # actually happens; it starts empty (the Tk panel's
+        # "Waiting for your first command" line is a placeholder,
+        # not an event) and is bounded to the latest 10 entries.
+        self._activity_feed: list[dict] = []
         self._web_home = None  # WebViewHome instance while the HTML home window is open
         self.agent = OrvixAgent(self.settings, self._request_approval, countdown_wait=self._power_countdown_wait)
         self._busy = False
@@ -1525,7 +1533,31 @@ class OrvixDesktop:
             return
         self.recent_activity.insert(0, clean[:78])
         self.recent_activity = self.recent_activity[:3]
+        # Web home feed: the same event, stamped once here with the
+        # shared HH:MM formatter and bounded to the latest 10. A
+        # failure here must never break the Tk activity panel.
+        try:
+            feed = getattr(self, "_activity_feed", None)
+            if not isinstance(feed, list):
+                feed = []
+                self._activity_feed = feed
+            feed.insert(0, {"text": clean[:78],
+                            "time": format_message_time(datetime.now())})
+            del feed[10:]
+        except Exception:
+            pass
         self._refresh_activity()
+
+    def _web_activity_entries(self) -> list[dict]:
+        """Read-only copy of the timestamped activity feed for the
+        WebView home bridge (newest first, latest 10). Returns an
+        empty list when nothing has happened yet — the web panel
+        then shows its honest empty state."""
+        feed = getattr(self, "_activity_feed", None)
+        if not isinstance(feed, list):
+            return []
+        return [dict(entry) for entry in feed
+                if isinstance(entry, dict)][:10]
 
     def _refresh_activity(self) -> None:
         if not hasattr(self, "activity_labels"):
@@ -1749,6 +1781,36 @@ class OrvixDesktop:
         try:
             queue, budget, audit, _memory, _lessons = self._shared_orvix_state()
             return _build_control_center_snapshot(queue=queue, budget=budget, audit_log=audit)
+        except Exception:
+            return None
+
+    def _web_hud_panels(self, app_tasks=None):
+        """Control Center panel lines for the WebView home bridge:
+        the SAME HudPanelData the Tk HUD refresh builds (same
+        snapshot, same memory/lesson counts), so both homes show
+        identical diagnostics. Read-only; returns None when the
+        panels cannot be assembled."""
+        try:
+            snapshot = self._hud_control_center_snapshot()
+            if app_tasks is None:
+                try:
+                    app_tasks = self.task_store.list_tasks(limit=12)
+                except Exception:
+                    app_tasks = None
+            memory_count = lesson_count = None
+            objects = getattr(self, "_hud_cc_objects", None)
+            if objects is not None:
+                try:
+                    memory_count = len(objects[3].list())
+                except Exception:
+                    pass
+                try:
+                    lesson_count = len(objects[4].list())
+                except Exception:
+                    pass
+            return build_hud_panels(snapshot, app_tasks,
+                                    memory_count=memory_count,
+                                    lesson_count=lesson_count)
         except Exception:
             return None
 

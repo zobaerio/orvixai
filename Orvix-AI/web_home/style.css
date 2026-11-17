@@ -323,3 +323,34 @@ body::after{background:radial-gradient(620px 380px at 16% -6%,rgba(0,140,255,.17
 .drive-row span{color:#b7cee3;font-weight:700;overflow-wrap:anywhere}
 .drive-row b{color:var(--cyan);font-weight:800}
 .drive-empty{font-size:11px;color:var(--muted);margin:2px 0}
+
+/* ==========================================================================
+   Command Center Phase 2 — home density: the centre Diagnostics list
+   (Control Center lines from the bridge payload), the right-column
+   Active Tasks panel with real progress bars + Current Operation
+   line, and the Recent Activity panel. Empty states are rendered by
+   app.js; these rules only style what the payload actually carries.
+   ========================================================================== */
+.diagnostics-panel{padding-bottom:14px}
+.diagnostics-list{display:flex;flex-direction:column;padding:2px 18px 0}
+.diagnostic-row{padding:7px 0;border-bottom:1px solid #0d3555;font-size:11px;font-weight:700;letter-spacing:.6px;color:#c8ddef;overflow-wrap:anywhere}
+.diagnostic-row:last-child{border-bottom:none}
+.diagnostics-empty,.home-tasks-empty,.activity-empty{font-size:12px;color:var(--muted);margin:4px 18px 6px}
+.diagnostics-log{padding:2px 18px 0;display:flex;flex-direction:column}
+.diagnostics-log-heading{font-size:10px;color:#7295b4;font-weight:800;letter-spacing:1px;margin:10px 18px 2px}
+.diagnostic-log-row{font-size:11px;color:#87a9c5;padding:4px 0;overflow-wrap:anywhere}
+.current-operation{margin:2px 14px 10px;padding:10px 12px;border:1px solid #086a9b;border-radius:12px;background:#06213b;display:flex;flex-direction:column;gap:4px}
+.current-operation span{font-size:9px;color:#7295b4;font-weight:800;letter-spacing:1px}
+.current-operation b{font-size:12px;color:var(--cyan);overflow-wrap:anywhere}
+.home-tasks-list,.activity-list{display:flex;flex-direction:column;gap:8px;padding:2px 14px 4px}
+.home-task-row{padding:10px 12px;border:1px solid #125b88;border-radius:12px;background:#08213b;display:flex;flex-direction:column;gap:7px}
+.home-task-head{display:flex;align-items:center;gap:10px}
+.task-progress-cell{display:flex;align-items:center;gap:8px}
+.task-progress{flex:1;height:7px;border-radius:5px;background:#193a5a;overflow:hidden;display:block}
+.task-progress-fill{display:block;height:100%;border-radius:5px;background:linear-gradient(90deg,#008CFF,#00DFFF);box-shadow:0 0 8px rgba(0,223,255,.55)}
+.task-progress-label{font-size:10px;color:var(--cyan);font-weight:800;min-width:32px;text-align:right}
+.task-row .task-progress-cell{flex:0 0 150px}
+.activity-row{display:flex;align-items:baseline;justify-content:space-between;gap:10px;padding:8px 12px;border:1px solid #0d4a6e;border-radius:10px;background:#06213b;font-size:11px}
+.activity-text{color:#e0effb;line-height:1.5;overflow-wrap:anywhere}
+.activity-time{flex:0 0 auto;font-size:10px;color:#7295b4;font-weight:700}
+@media(max-width:760px){.task-row .task-progress-cell{flex-basis:100%}}

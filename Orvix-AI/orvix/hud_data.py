@@ -181,6 +181,64 @@ def format_task_timestamp(value: object) -> str:
     return parsed.strftime("%Y-%m-%d %H:%M")
 
 
+def _plan_steps(record: dict) -> list[dict]:
+    """The record's plan steps (``TaskStore.set_task_plan`` rows).
+
+    Only dict rows count — that is the shape the store writes. A
+    record without a plan (most simple commands never get one) has
+    no plan steps at all, which is different from a plan whose steps
+    are all still pending."""
+    plan = record.get("plan")
+    if not isinstance(plan, list):
+        return []
+    return [step for step in plan if isinstance(step, dict)]
+
+
+def task_progress_fraction(record: object) -> Optional[float]:
+    """Completed plan steps / total plan steps for one task record.
+
+    Returns None when the record carries no plan steps: with no plan
+    there is no honest percentage to report (a UI must show the
+    status only, never a fabricated 0%). A plan that exists but has
+    no completed step yet honestly reports 0.0.
+    """
+    if not isinstance(record, dict):
+        return None
+    steps = _plan_steps(record)
+    if not steps:
+        return None
+    completed = sum(
+        1 for step in steps
+        if str(step.get("status") or "").strip().lower() == "completed")
+    return completed / len(steps)
+
+
+def task_current_step(record: object) -> Optional[str]:
+    """The record's current step text, or None when there is none.
+
+    The running plan step's title wins (that is the step executing
+    right now); otherwise the latest recorded progress event in the
+    record's ``steps`` list is the most recent thing the task was
+    seen doing. A record with neither has no current step — callers
+    must not substitute the command text and call it a step.
+    """
+    if not isinstance(record, dict):
+        return None
+    for step in _plan_steps(record):
+        if str(step.get("status") or "").strip().lower() == "running":
+            title = " ".join(str(step.get("title") or "").split())
+            if title:
+                return title
+    events = record.get("steps")
+    if isinstance(events, list):
+        for event in reversed(events):
+            if isinstance(event, dict):
+                text = " ".join(str(event.get("text") or "").split())
+                if text:
+                    return text
+    return None
+
+
 def build_task_entries(records: Optional[Sequence[dict]],
                        limit: int = 10) -> list[dict]:
     """Display-ready entries for a newest-first TaskStore record list.
@@ -189,9 +247,13 @@ def build_task_entries(records: Optional[Sequence[dict]],
     (plus the HUD status mark for that status), its command text with
     whitespace collapsed, and its created/finished times formatted by
     :func:`format_task_timestamp`. ``finishedAt`` stays None while a
-    task has not finished — it is never invented. Non-dict rows are
-    skipped and the result is bounded to ``limit`` entries; an empty
-    or missing history yields an empty list.
+    task has not finished — it is never invented. Command Center
+    Phase 2 adds ``progress`` (the plan-step fraction from
+    :func:`task_progress_fraction`; None when the record has no plan
+    steps) and ``currentStep`` (from :func:`task_current_step`; None
+    when the record records no step). Non-dict rows are skipped and
+    the result is bounded to ``limit`` entries; an empty or missing
+    history yields an empty list.
     """
     if not records:
         return []
@@ -214,6 +276,8 @@ def build_task_entries(records: Optional[Sequence[dict]],
             "createdAt": format_task_timestamp(row.get("created_at")),
             "finishedAt": (format_task_timestamp(finished_raw)
                            if finished_raw else None),
+            "progress": task_progress_fraction(row),
+            "currentStep": task_current_step(row),
         })
     return entries
 

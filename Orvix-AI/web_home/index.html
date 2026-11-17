@@ -96,6 +96,16 @@
           <div class="hero-bottom"><span class="pulse-dot"></span> <span id="coreModeLabel">—</span> <span class="separator">/</span> <span id="activeCharacter">—</span> ONLINE</div>
         </section>
 
+        <section class="panel diagnostics-panel">
+          <div class="panel-heading"><h2><span class="heading-icon">▤</span> Diagnostics</h2><span class="muted">CONTROL CENTER</span></div>
+          <div class="diagnostics-list" id="diagnosticsList"></div>
+          <p class="diagnostics-empty" id="diagnosticsEmpty">No diagnostics available</p>
+          <div class="diagnostics-log hidden" id="diagnosticsLogWrap">
+            <div class="diagnostics-log-heading">Execution Log</div>
+            <div class="diagnostics-log" id="diagnosticsLog"></div>
+          </div>
+        </section>
+
         <section class="panel chat-panel">
           <div class="chat-heading"><div><span class="heading-icon">◉</span><b>AI AGENT · TASK EXECUTION</b></div><button class="text-button" id="clearChatButton" title="Clear the conversation view (task history is kept)">Clear</button><span class="ready" id="chatStatePill"><i></i> <span id="chatStateLabel">READY</span></span></div>
           <div class="chat-log" id="chatLog" aria-live="polite">
@@ -126,6 +136,19 @@
             <button class="quick-action" data-action="system_info"><span class="app-icon system-info">ⓘ</span><b>System Information</b></button>
             <button class="quick-action" data-action="power"><span class="app-icon power">⏻</span><b>Power Options</b></button>
           </div>
+        </section>
+
+        <section class="panel home-tasks-panel">
+          <div class="panel-heading"><h2><span class="heading-icon">▥</span> Active Tasks</h2><span class="muted">LIVE</span></div>
+          <div class="current-operation"><span>Current Operation</span><b id="currentOperation">Idle — no task running</b></div>
+          <div class="home-tasks-list" id="homeTasksList"></div>
+          <p class="home-tasks-empty" id="homeTasksEmpty">No active tasks</p>
+        </section>
+
+        <section class="panel activity-panel">
+          <div class="panel-heading"><h2><span class="heading-icon">◷</span> Recent Activity</h2><span class="muted">LATEST</span></div>
+          <div class="activity-list" id="activityList"></div>
+          <p class="activity-empty" id="activityEmpty">No recent activity</p>
         </section>
 
         <section class="panel model-panel">

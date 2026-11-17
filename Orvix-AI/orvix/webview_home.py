@@ -42,7 +42,7 @@ from .home_data import (
     quick_action_tiles,
 )
 from .settings import ENDPOINT_HEALTH_STATES
-from .hud_data import build_task_entries
+from .hud_data import build_hud_panels, build_task_entries, task_current_step
 from .ui_formatters import format_message_time
 from .version import APP_NAME, APP_VERSION
 
@@ -223,20 +223,206 @@ def character_portrait_data_uris(characters=None, base_dir=None) -> dict:
 # (which stays the place for search/filter over all 100 records).
 MAX_PAYLOAD_TASKS = 10
 
+# How many recent activity entries the payload carries (Command
+# Center Phase 2). The desktop feed itself is the source; the
+# payload only bounds what one push sends to the page.
+MAX_PAYLOAD_ACTIVITY = 10
+
+# The Tk activity panel's placeholder line before the first real
+# command: furniture, not an activity event, so it never reaches
+# the web activity panel (which shows its honest empty state
+# instead).
+_ACTIVITY_PLACEHOLDER = "Waiting for your first command"
+
+
+def _control_center_payload(app, app_tasks):
+    """Control Center / diagnostics block for the payload, or None.
+
+    The data is the SAME data the Tk HUD home shows: a
+    :func:`orvix.control_center.build_snapshot` snapshot turned into
+    display lines by :func:`orvix.hud_data.build_hud_panels`. It is
+    obtained from the app object defensively, in the same style the
+    bridge already uses for optional app capabilities:
+
+    1. an app-provided panels accessor (``_web_hud_panels`` — the
+       real desktop app supplies one next to its Tk HUD refresh, so
+       memory/lesson counts match the Tk lines exactly);
+    2. an app-provided snapshot accessor
+       (``_hud_control_center_snapshot``, the method the Tk HUD
+       refresh itself calls), with the panels assembled here;
+    3. otherwise the capability is missing and the block is None —
+       the page then renders its honest empty state. A snapshot
+       accessor that exists but returns None still counts as the
+       capability being present: the panels are assembled with a
+       None snapshot, exactly like the Tk HUD does, so the task
+       counts from ``app_tasks`` stay real and the rest render as
+       dashes. Nothing here ever fabricates a line, and no failure
+       raises into the payload.
+    """
+    accessor = getattr(app, "_web_hud_panels", None)
+    if callable(accessor):
+        try:
+            panels = accessor()
+        except Exception:
+            panels = None
+        if panels is not None:
+            return _hud_panels_payload(panels)
+    snapshot_fn = getattr(app, "_hud_control_center_snapshot", None)
+    if not callable(snapshot_fn):
+        return None
+    try:
+        snapshot = snapshot_fn()
+    except Exception:
+        snapshot = None
+    memory_count, lesson_count = _hud_memory_counts(app)
+    try:
+        panels = build_hud_panels(
+            snapshot, app_tasks,
+            memory_count=memory_count, lesson_count=lesson_count)
+    except Exception:
+        return None
+    return _hud_panels_payload(panels)
+
+
+def _hud_panels_payload(panels) -> dict:
+    """JSON shape for a HudPanelData: the six Control Center lines
+    plus the snapshot's recent-task and execution-log lines."""
+    return {
+        "agents": str(getattr(panels, "agents", "")),
+        "models": str(getattr(panels, "models", "")),
+        "health": str(getattr(panels, "health", "")),
+        "queue": str(getattr(panels, "queue", "")),
+        "budget": str(getattr(panels, "budget", "")),
+        "memory": str(getattr(panels, "memory", "")),
+        "recentTasks": [str(line) for line in
+                        (getattr(panels, "recent_tasks", None) or ())],
+        "logLines": [str(line) for line in
+                     (getattr(panels, "log_lines", None) or ())],
+    }
+
+
+def _hud_memory_counts(app):
+    """(memory_count, lesson_count) from the app's shared ORVIX
+    state objects, mirroring the Tk HUD refresh: the objects tuple
+    is (queue, budget, audit, memory, lessons). Either count stays
+    None when it cannot be read — the memory line then shows a
+    dash for that half instead of an invented number."""
+    objects = getattr(app, "_hud_cc_objects", None)
+    if objects is None:
+        return (None, None)
+    memory_count = lesson_count = None
+    try:
+        memory_count = len(objects[3].list())
+    except Exception:
+        pass
+    try:
+        lesson_count = len(objects[4].list())
+    except Exception:
+        pass
+    return (memory_count, lesson_count)
+
+
+def _activity_payload(app) -> list:
+    """Recent-activity block: the desktop app's activity feed,
+    newest first, bounded to ``MAX_PAYLOAD_ACTIVITY`` entries.
+
+    Sources, in order, all read defensively: an app accessor
+    (``_web_activity_entries`` — the real app supplies one over its
+    timestamped feed), a timestamped feed attribute
+    (``_activity_feed`` / ``activity_feed``), then the legacy
+    ``recent_activity`` string list the Tk panel shows. Dict entries
+    keep their recorded ``time`` (a string) — a time is shown only
+    when one was actually recorded; plain-string entries carry
+    ``time: None``. The Tk placeholder line is furniture, not an
+    event, and is skipped. Missing feed → empty list (the page
+    renders "No recent activity"); nothing is invented and no
+    failure raises.
+    """
+    raw = None
+    accessor = getattr(app, "_web_activity_entries", None)
+    if callable(accessor):
+        try:
+            raw = accessor()
+        except Exception:
+            raw = None
+    if not isinstance(raw, list):
+        raw = getattr(app, "_activity_feed", None)
+    if not isinstance(raw, list):
+        raw = getattr(app, "activity_feed", None)
+    if not isinstance(raw, list):
+        raw = getattr(app, "recent_activity", None)
+    if not isinstance(raw, list):
+        return []
+    entries: list[dict] = []
+    for item in raw:
+        if len(entries) >= MAX_PAYLOAD_ACTIVITY:
+            break
+        if isinstance(item, dict):
+            text = " ".join(str(item.get("text") or "").split())
+            stamp = item.get("time")
+            stamp = stamp if isinstance(stamp, str) and stamp.strip() else None
+        elif isinstance(item, str):
+            text = " ".join(item.split())
+            stamp = None
+        else:
+            continue
+        if not text or text == _ACTIVITY_PLACEHOLDER:
+            continue
+        entries.append({"text": text, "time": stamp})
+    return entries
+
+
+def _current_operation_payload(records) -> dict | None:
+    """The running task's current operation, or None when idle.
+
+    The first (newest-first) record still running / cancelling is
+    the current operation: its text is the record's current step
+    (running plan-step title, else latest progress event) when one
+    exists, else the task's own command text — the work actually in
+    flight. No running record → None, and the page shows its honest
+    idle label instead of inventing an operation.
+    """
+    if not records:
+        return None
+    for row in records:
+        if not isinstance(row, dict):
+            continue
+        status = str(row.get("status") or "").strip().lower()
+        if status not in ("running", "cancelling"):
+            continue
+        step = task_current_step(row)
+        command = " ".join(str(row.get("command", "")).split())
+        text = step or command
+        if not text:
+            continue
+        return {"text": text, "status": status, "command": command}
+    return None
+
 
 def _recent_task_records(app) -> list:
     """Newest-first TaskStore records from the app, or [] when the app
     has no readable task store. Any failure yields an empty list: the
     page then shows its honest empty state instead of stale or
     invented tasks."""
+    records = _panel_task_records(app)
+    return records if records is not None else []
+
+
+def _panel_task_records(app):
+    """TaskStore records for the HUD panel assembly, or None when
+    the app has no readable task store. The None case matters: it is
+    what the Tk HUD passes to build_hud_panels when its own store
+    read fails, so the queue line falls back to the snapshot's
+    background-queue stats instead of reporting invented zeros for
+    a store that was never read."""
     store = getattr(app, "task_store", None)
     if store is None:
-        return []
+        return None
     try:
         records = store.list_tasks(limit=MAX_PAYLOAD_TASKS)
     except Exception:
-        return []
-    return records if isinstance(records, list) else []
+        return None
+    return records if isinstance(records, list) else None
 
 
 def _probe_health(app):
@@ -343,6 +529,11 @@ def build_state_payload(app, stats=None) -> dict:
     selected = getattr(app, "selected_character", "luna")
     lines = model_status_lines(
         settings, core_mode=core_mode, wake_enabled=wake_enabled)
+    # None (not []) when the app has no readable task store, so the
+    # Control Center assembly below falls back to the snapshot's
+    # queue stats exactly like the Tk HUD; the tasks entries and the
+    # current operation treat None as an empty history.
+    task_records = _panel_task_records(app)
     return {
         "connected": True,
         "appName": APP_NAME,
@@ -362,7 +553,15 @@ def build_state_payload(app, stats=None) -> dict:
             ],
         },
         "tasks": build_task_entries(
-            _recent_task_records(app), limit=MAX_PAYLOAD_TASKS),
+            task_records, limit=MAX_PAYLOAD_TASKS),
+        # Command Center Phase 2 (additive — every key above is
+        # unchanged): the Control Center diagnostics block (None
+        # when the app exposes no snapshot capability), the recent
+        # activity feed (empty when the app records none), and the
+        # current operation (None when no task is running).
+        "controlCenter": _control_center_payload(app, task_records),
+        "activity": _activity_payload(app),
+        "currentOperation": _current_operation_payload(task_records),
         "stats": {
             "cpu": stats.cpu_percent,
             "ram": stats.ram_percent,
@@ -777,6 +976,8 @@ __all__ = [
     "ENV_VAR",
     "ACTION_COMMANDS",
     "MAX_MESSAGE_BUFFER",
+    "MAX_PAYLOAD_ACTIVITY",
+    "MAX_PAYLOAD_TASKS",
     "OrvixWebHomeApi",
     "WebViewHome",
     "build_state_payload",
