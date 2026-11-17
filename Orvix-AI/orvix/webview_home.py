@@ -1297,6 +1297,31 @@ class OrvixWebHomeApi:
         except Exception as exc:
             return {"ok": False, "error": type(exc).__name__}
 
+    def cancelTask(self, taskId=None):
+        try:
+            # Tasks centre completion (Command Center Phase 9):
+            # cancel ONE task record from the web Tasks view. A
+            # write, so it follows the same enqueue discipline as
+            # every other mutating bridge method — nothing is
+            # cancelled from this bridge thread. The enqueued app
+            # method (_cancel_task_from_web) routes to the app's
+            # EXISTING cancel paths only: TaskStore.cancel_queued_task
+            # for a queued record (the call Tk Task History makes)
+            # and _cancel_current_task for the running record when
+            # it is the app's active task. A record that cannot be
+            # cancelled (already finished, already cancelling, or an
+            # unknown id) is an honest no-op there. The page's list
+            # refreshes from the next state payload, which reflects
+            # the store's real state — the bridge claims nothing
+            # beyond the request. A missing id enqueues nothing.
+            task_id = str(taskId or "").strip()
+            if not task_id:
+                return {"ok": False, "error": "missing task id"}
+            self._enqueue("_cancel_task_from_web", (task_id,))
+            return {"ok": True}
+        except Exception as exc:
+            return {"ok": False, "error": type(exc).__name__}
+
     def memorySearch(self, query=None):
         try:
             # Memory Center search (Command Center Phase 5). This

@@ -117,11 +117,7 @@
             <div class="system-note"><span>ⓘ SYSTEM</span><p>Live উত্তর ও telemetry ORVIX desktop bridge থেকে আসে। Bridge ছাড়া পেজটি standalone খুললে not-connected demo state দেখায় — কোনো ভুয়া data দেখানো হয় না।</p></div>
           </div>
           <div class="typing-indicator hidden" id="typingIndicator" aria-hidden="true"><span></span><span></span><span></span><em>ORVIX is working…</em></div>
-          <div class="chat-composer">
-            <button class="mic-button" id="micButton" title="Start voice input">🎙</button>
-            <input id="commandInput" type="text" placeholder="Ask ORVIX anything or type a command…" autocomplete="off" />
-            <button class="send-button" id="sendButton">➤ <span>Send</span></button>
-          </div>
+          <p class="chat-composer-note">The command bar at the bottom of the window is always available — send a command from any view.</p>
         </section>
       </section>
 
@@ -194,7 +190,7 @@
 
     <section class="secondary-view panel hidden" id="tasksView">
       <div class="panel-heading"><h2>Tasks</h2><button class="text-button" id="tasksBackHome">← Back to Home</button></div>
-      <p>Recent tasks from the ORVIX desktop app, newest first. This view is read-only — run, cancel and full history live in the desktop console's Task History.</p>
+      <p>Recent tasks from the ORVIX desktop app, newest first, with each record's progress, recorded result and safe diagnostics. A queued or running task can be cancelled here; full history, search and export live in the desktop console's Task History.</p>
       <div class="tasks-list" id="tasksList"></div>
       <p class="tasks-empty" id="tasksEmpty">No tasks yet</p>
     </section>
@@ -321,6 +317,16 @@
       <div class="panel-heading"><h2 id="secondaryTitle">Tools</h2><button class="text-button" id="backHome">← Back to Home</button></div>
       <p id="secondaryDescription">ORVIX tools and configuration.</p>
       <div class="secondary-cards" id="secondaryCards"></div>
+    </section>
+
+    <section class="command-bar panel" id="commandBar" aria-label="Command bar">
+      <div class="command-bar-status"><span class="pulse-dot"></span><span id="commandBarStatus">NOT CONNECTED</span></div>
+      <div class="chat-composer command-bar-composer">
+        <button class="mic-button" id="micButton" title="Start voice input">🎙</button>
+        <input id="commandInput" type="text" placeholder="Ask ORVIX anything or type a command…" autocomplete="off" />
+        <button class="send-button" id="sendButton">➤ <span>Send</span></button>
+      </div>
+      <button class="command-stop-button hidden" id="commandStopButton" title="Stop the running task (Emergency Stop)">■ Stop</button>
     </section>
 
     <footer class="footer"><span><b>ORVIX</b> <i>•</i> Built with <em>♥</em> for a Smarter Tomorrow</span><strong>ENGINEERING PRECISION. DIGITAL INNOVATION.</strong><div class="footer-links"><a href="https://github.com/zobaerio/orvixai" aria-label="GitHub">⌘</a></div></footer>
