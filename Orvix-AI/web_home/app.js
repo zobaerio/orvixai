@@ -641,6 +641,7 @@ window.orvixPushState = function (state) {
   renderActivity(state);
   renderNotifications(state);
   renderEmergency(state);
+  renderMemory(state);
 
   if (state.character) {
     const key = String(state.character).toUpperCase();
@@ -739,6 +740,136 @@ function renderNotifications(state) {
       row.appendChild(text);
     }
     list.appendChild(row);
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Memory Center (Command Center Phase 5): the Memory nav destination
+// renders ONLY from the payload's memory block — the desktop app's
+// one MemoryStore, grouped by its real categories with true counts,
+// pushed by the bridge with the state (see orvix/webview_home.py).
+// Search is a filter the page requests through the bridge
+// (memorySearch); the next payload then carries the store's own
+// search results and the page re-renders from it — the page keeps
+// no memory collection of its own and never filters or deletes
+// locally. Entry keys and texts are rendered with textContent only,
+// so a remembered string can never become markup. Standalone (no
+// bridge / no store) the view shows the honest not-connected /
+// unavailable presentation instead of inventing entries.
+// ---------------------------------------------------------------------------
+const MEMORY_CATEGORIES = [
+  ["preference", "Preferences"],
+  ["fact", "Facts"],
+  ["strategy", "Strategies"],
+  ["note", "Notes"]
+];
+function memoryEntryTime(entry) {
+  const ts = entry && entry.updatedAt;
+  if (typeof ts !== "number" || !isFinite(ts) || ts <= 0) return "";
+  try { return new Date(ts * 1000).toLocaleString(); } catch (_) { return ""; }
+}
+function renderMemory(state) {
+  const list = $("#memoryList");
+  const empty = $("#memoryEmpty");
+  const summary = $("#memorySummary");
+  const clearButton = $("#memoryClearButton");
+  const confirmBox = $("#memoryClearConfirm");
+  if (!list || !empty) return;
+  list.replaceChildren();
+  const block = connected && state && state.memory ? state.memory : null;
+  if (clearButton) clearButton.disabled = !connected || !block || !block.total;
+  if (!connected && confirmBox) confirmBox.classList.add("hidden");
+  if (!block) {
+    if (summary) summary.textContent = "";
+    empty.textContent = connected
+      ? "Memory is unavailable — the desktop app has no memory store connected."
+      : "Not connected — desktop bridge required.";
+    empty.classList.remove("hidden");
+    return;
+  }
+  const query = String(block.query || "");
+  const total = typeof block.total === "number" ? block.total : 0;
+  const shown = typeof block.shown === "number" ? block.shown : 0;
+  if (summary) {
+    if (query) {
+      summary.textContent = total
+        ? total + (total === 1 ? " memory matches " : " memories match ") + "“" + query + "”"
+        : "";
+    } else if (total) {
+      summary.textContent = block.truncated
+        ? "Showing latest " + shown + " of " + total + " memories"
+        : total + (total === 1 ? " memory saved" : " memories saved");
+    } else {
+      summary.textContent = "";
+    }
+  }
+  if (!total) {
+    empty.textContent = query
+      ? "No memories match “" + query + "”."
+      : "No memories saved yet";
+    empty.classList.remove("hidden");
+    return;
+  }
+  empty.classList.add("hidden");
+  const byCategory = block.byCategory || {};
+  const counts = block.counts || {};
+  const knownKeys = MEMORY_CATEGORIES.map(([key]) => key);
+  const order = MEMORY_CATEGORIES.concat(
+    Object.keys(byCategory)
+      .filter((key) => knownKeys.indexOf(key) === -1)
+      .map((key) => [key, key]));
+  order.forEach(([key, label]) => {
+    const entries = Array.isArray(byCategory[key]) ? byCategory[key] : [];
+    const count = typeof counts[key] === "number" ? counts[key] : entries.length;
+    const section = document.createElement("section");
+    section.className = "memory-category";
+    const heading = document.createElement("h3");
+    heading.className = "memory-category-heading";
+    heading.textContent = label + " · " + count;
+    section.appendChild(heading);
+    if (!entries.length) {
+      const none = document.createElement("p");
+      none.className = "memory-category-empty";
+      if (count > 0) none.textContent = "More entries in this category exist beyond the latest shown.";
+      else if (query) none.textContent = "No " + label.toLowerCase() + " match your search.";
+      else none.textContent = "No " + label.toLowerCase() + " saved yet.";
+      section.appendChild(none);
+    }
+    entries.forEach((entry) => {
+      if (!entry) return;
+      const row = document.createElement("article");
+      row.className = "memory-entry";
+      const head = document.createElement("div");
+      head.className = "memory-entry-head";
+      const keyEl = document.createElement("b");
+      keyEl.className = "memory-entry-key";
+      keyEl.textContent = String(entry.key || "");
+      head.appendChild(keyEl);
+      const stamp = memoryEntryTime(entry);
+      if (stamp) {
+        const time = document.createElement("span");
+        time.className = "memory-entry-time";
+        time.textContent = stamp;
+        head.appendChild(time);
+      }
+      const del = document.createElement("button");
+      del.type = "button";
+      del.className = "memory-delete-button";
+      del.textContent = "Delete";
+      del.dataset.entryId = String(entry.id || "");
+      del.dataset.entryKey = String(entry.key || "");
+      del.disabled = !connected;
+      head.appendChild(del);
+      row.appendChild(head);
+      if (entry.text) {
+        const text = document.createElement("p");
+        text.className = "memory-entry-text";
+        text.textContent = String(entry.text);
+        row.appendChild(text);
+      }
+      section.appendChild(row);
+    });
+    list.appendChild(section);
   });
 }
 
@@ -924,6 +1055,74 @@ $("#takeControlToggle").addEventListener("change", (event) => {
   renderEmergency(lastState);
 });
 
+// Memory Center actions (Phase 5). Search: the button / Enter only
+// SENDS the filter through the bridge (memorySearch) — the list
+// re-renders when the next state payload arrives carrying the
+// store's search results for that filter, exactly like the Take
+// Control toggle above; nothing is filtered locally. Clear search
+// sends the empty filter the same way.
+function runMemorySearch() {
+  const input = $("#memorySearchInput");
+  const query = input ? input.value.trim() : "";
+  if (connected && callBridge("memorySearch", [query])) {
+    toast(query ? "Searching memory…" : "Memory search cleared.");
+    return;
+  }
+  toast("Not connected — desktop bridge required.");
+}
+$("#memorySearchButton").addEventListener("click", runMemorySearch);
+$("#memorySearchInput").addEventListener("keydown", (e) => { if (e.key === "Enter") runMemorySearch(); });
+$("#memorySearchClear").addEventListener("click", () => {
+  const input = $("#memorySearchInput");
+  if (input) input.value = "";
+  if (connected && callBridge("memorySearch", [""])) {
+    toast("Memory search cleared.");
+    return;
+  }
+  toast("Not connected — desktop bridge required.");
+});
+
+// Per-entry delete: one delegated listener for the whole list. The
+// button carries the entry id the payload sent (falling back to the
+// entry key for entries stored before ids existed); the bridge
+// enqueues the deletion on the app side and the list refreshes from
+// the next payload — the entry is never removed locally first, so
+// the page cannot show a deletion the store did not apply.
+$("#memoryList").addEventListener("click", (event) => {
+  const target = event.target;
+  const button = target && typeof target.closest === "function"
+    ? target.closest(".memory-delete-button") : null;
+  if (!button) return;
+  const ident = button.dataset.entryId || button.dataset.entryKey || "";
+  if (!ident) { toast("This entry cannot be deleted from here."); return; }
+  if (connected && callBridge("memoryForget", [ident])) {
+    toast("Memory delete requested.");
+    return;
+  }
+  toast("Not connected — desktop bridge required.");
+});
+
+// Clear all: the first click only opens the in-page confirm step —
+// an accidental click must not clear anything. Only the confirm
+// button calls the bridge memoryClear method, which enqueues the
+// store clear on the app side; the list and counts refresh from the
+// next payload.
+$("#memoryClearButton").addEventListener("click", () => {
+  if (!connected) { toast("Not connected — desktop bridge required."); return; }
+  $("#memoryClearConfirm").classList.remove("hidden");
+});
+$("#memoryClearCancel").addEventListener("click", () => {
+  $("#memoryClearConfirm").classList.add("hidden");
+});
+$("#memoryClearConfirmButton").addEventListener("click", () => {
+  $("#memoryClearConfirm").classList.add("hidden");
+  if (connected && callBridge("memoryClear", [])) {
+    toast("Memory clear requested.");
+    return;
+  }
+  toast("Not connected — desktop bridge required.");
+});
+
 // Standalone fallback only: browser speech recognition fills the composer.
 // In the desktop app the mic routes to the app's own speech engine instead.
 let recognition = null;
@@ -1067,17 +1266,26 @@ const tabContent = {
 };
 function showTab(tab) {
   const tasksView = $("#tasksView");
+  const memoryView = $("#memoryView");
   if (tab === "home") {
     $("#homeView").classList.remove("hidden"); $("#secondaryView").classList.add("hidden");
     if (tasksView) tasksView.classList.add("hidden");
+    if (memoryView) memoryView.classList.add("hidden");
   } else if (tab === "tasks") {
     $("#homeView").classList.add("hidden"); $("#secondaryView").classList.add("hidden");
     if (tasksView) tasksView.classList.remove("hidden");
+    if (memoryView) memoryView.classList.add("hidden");
     renderTasks();
+  } else if (tab === "memory") {
+    $("#homeView").classList.add("hidden"); $("#secondaryView").classList.add("hidden");
+    if (tasksView) tasksView.classList.add("hidden");
+    if (memoryView) memoryView.classList.remove("hidden");
+    renderMemory(lastState);
   } else {
     const data = tabContent[tab] || tabContent.tools;
     $("#homeView").classList.add("hidden"); $("#secondaryView").classList.remove("hidden");
     if (tasksView) tasksView.classList.add("hidden");
+    if (memoryView) memoryView.classList.add("hidden");
     $("#secondaryTitle").textContent = data.title; $("#secondaryDescription").textContent = data.desc;
     $("#secondaryCards").replaceChildren();
     data.cards.forEach(([title, desc]) => {
@@ -1128,6 +1336,7 @@ $$(".nav-item").forEach(button => button.addEventListener("click", () => {
 $$("[data-tab='tools']").forEach(button => button.addEventListener("click", () => showTab("tools")));
 $("#backHome").addEventListener("click", () => showTab("home"));
 $("#tasksBackHome").addEventListener("click", () => showTab("home"));
+$("#memoryBackHome").addEventListener("click", () => showTab("home"));
 
 // Initial state: not connected until the bridge proves otherwise, and an
 // empty performance strip (all bars at 0 height, caption shows dashes).
@@ -1142,6 +1351,7 @@ renderHomeTasks(null);
 renderActivity(null);
 renderNotifications(null);
 renderEmergency(null);
+renderMemory(null);
 renderPerf();
 tryConnect();
 
