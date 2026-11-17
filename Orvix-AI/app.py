@@ -47,6 +47,7 @@ from orvix.branding import ensure_brand_assets
 from orvix.startup import is_windows_startup_enabled, set_windows_startup
 from orvix.ui_formatters import bounded_float, bounded_int, bounded_window_origin, format_header_clock, format_message_time
 from orvix.webview_home import WebViewHome, webview_available, webview_home_enabled
+from orvix.character_theme import character_accent
 from orvix.notify import notify_event
 from orvix.notify import NotificationStore, record_event
 
@@ -136,6 +137,12 @@ class OrvixDesktop:
         self._tray_thread: threading.Thread | None = None
         self._background_mode = False
         self._approval_dialog: tk.Toplevel | None = None
+        # The currently open approval request's title/message, so
+        # the web AI Core page can show WHAT is waiting (read-only;
+        # answering stays in the dialog). None whenever no approval
+        # dialog is open — set in _show_approval, cleared wherever
+        # the dialog closes (Command Center Phase 8).
+        self._approval_request: dict | None = None
         self._power_countdown_dialog: tk.Toplevel | None = None
         self.wake_enabled = False
         self._wake_thread: threading.Thread | None = None
@@ -1514,21 +1521,28 @@ class OrvixDesktop:
             return
         for key, card in self.character_cards.items():
             selected = key == self.selected_character
+            # Personality theme (Command Center Phase 8): the
+            # SELECTED card's border, name and selection dot take
+            # the character's own ambient accent (orvix/
+            # character_theme.py) instead of the constant ACCENT.
+            # This is a secondary tint only — the core's state
+            # colours are state-driven and stay untouched.
+            accent = character_accent(key)
             card.configure(bg="#14354d" if selected else CARD,
-                           highlightbackground=ACCENT if selected else "#263a56",
+                           highlightbackground=accent if selected else "#263a56",
                            highlightthickness=2 if selected else 1)
             for child in card.winfo_children():
                 try:
                     child.configure(bg="#14354d" if selected else CARD)
                     if isinstance(child, tk.Label) and child.cget("text") in {self.characters[key]["name"], key[:1].upper()}:
-                        child.configure(fg=ACCENT if selected else TEXT)
+                        child.configure(fg=accent if selected else TEXT)
                 except tk.TclError:
                     pass
         for key, dot in getattr(self, "character_dots", {}).items():
             selected = key == self.selected_character
             try:
                 dot.configure(text="●" if selected else "○",
-                              fg=ACCENT if selected else MUTED)
+                              fg=character_accent(key) if selected else MUTED)
             except tk.TclError:
                 pass
 
@@ -4187,6 +4201,7 @@ class OrvixDesktop:
             return
         win = tk.Toplevel(self.root)
         self._approval_dialog = win
+        self._approval_request = {"title": str(title), "message": str(message)}
         win.title(title)
         win.geometry("600x390")
         win.minsize(500, 300)
@@ -4213,6 +4228,7 @@ class OrvixDesktop:
             event.set()
             if self._approval_dialog is win:
                 self._approval_dialog = None
+                self._approval_request = None
             try:
                 win.grab_release()
                 win.destroy()
@@ -4231,6 +4247,7 @@ class OrvixDesktop:
     def _dismiss_approval_dialog(self) -> None:
         win = self._approval_dialog
         self._approval_dialog = None
+        self._approval_request = None
         if win is not None:
             try:
                 win.grab_release()

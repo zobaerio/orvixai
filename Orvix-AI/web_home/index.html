@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en" data-character="LUNA">
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
@@ -20,6 +20,7 @@
         <button class="nav-item active" data-tab="home">⌂ <span>Home</span></button>
         <button class="nav-item" data-tab="tools">▦ <span>Tools</span></button>
         <button class="nav-item" data-tab="tasks">▤ <span>Tasks</span></button>
+        <button class="nav-item" data-tab="core">◎ <span>AI Core</span></button>
         <button class="nav-item" data-tab="voice">🎙 <span>Voice</span></button>
         <button class="nav-item" data-tab="memory">◈ <span>Memory</span></button>
         <button class="nav-item" data-tab="models">♧ <span>Models</span></button>
@@ -94,7 +95,7 @@
           </div>
           <h1>ORVIX</h1>
           <p class="hero-subtitle">AI AGENT ASSISTANT</p>
-          <div class="hero-caption"><span>Speak</span><i>•</i><span>Command</span><i>•</i><span>Get Results</span></div>
+          <div class="hero-caption"><button class="hero-action" id="heroSpeakButton" type="button">Speak</button><i>•</i><button class="hero-action" id="heroCommandButton" type="button">Command</button><i>•</i><button class="hero-action" id="heroResultsButton" type="button">Get Results</button></div>
           <div class="hero-status" id="coreStatus" data-state="idle"><span class="pulse-dot"></span><span id="coreStatusLabel">READY TO ASSIST</span></div>
           <div class="hero-bottom"><span class="pulse-dot"></span> <span id="coreModeLabel">—</span> <span class="separator">/</span> <span id="activeCharacter">—</span> ONLINE</div>
         </section>
@@ -279,6 +280,41 @@
         <tbody id="perfProcessesBody"></tbody>
       </table>
       <p class="perf-processes-empty" id="perfProcessesEmpty">No process data yet</p>
+    </section>
+
+    <section class="secondary-view panel hidden" id="coreView">
+      <div class="panel-heading"><h2>AI Core</h2><button class="text-button" id="coreBackHome">← Back to Home</button></div>
+      <p>The desktop app's core state machine, live. The highlighted state is the one the app is in right now; the current operation, recent activity and any waiting approval come from the same bridge payload as the home panels.</p>
+      <div class="core-grid">
+        <div class="core-card">
+          <h3>Core State</h3>
+          <div class="core-state-list" id="coreStateList">
+            <div class="core-state-row" data-core-state="idle"><span class="core-state-dot st-idle"></span>IDLE</div>
+            <div class="core-state-row" data-core-state="listening"><span class="core-state-dot st-listening"></span>LISTENING</div>
+            <div class="core-state-row" data-core-state="thinking"><span class="core-state-dot st-thinking"></span>THINKING</div>
+            <div class="core-state-row" data-core-state="processing"><span class="core-state-dot st-processing"></span>PROCESSING</div>
+            <div class="core-state-row" data-core-state="executing"><span class="core-state-dot st-executing"></span>EXECUTING</div>
+            <div class="core-state-row" data-core-state="speaking"><span class="core-state-dot st-speaking"></span>SPEAKING</div>
+            <div class="core-state-row" data-core-state="completed"><span class="core-state-dot st-completed"></span>COMPLETED</div>
+            <div class="core-state-row" data-core-state="error"><span class="core-state-dot st-error"></span>ERROR</div>
+            <div class="core-state-row core-state-offline" data-core-state="offline"><span class="core-state-dot st-offline"></span>OFFLINE</div>
+          </div>
+          <p class="core-note">OFFLINE is not a core state — it is this page's presentation when the desktop bridge is disconnected. The core itself has exactly the eight states above it.</p>
+          <p class="core-note" id="coreModeLine">Core mode: —</p>
+        </div>
+        <div class="core-card">
+          <h3>Current Operation</h3>
+          <b class="core-operation" id="coreCurrentOperation">Idle — no task running</b>
+          <h3>Pending Approvals</h3>
+          <div id="coreApprovals"><p class="core-note">No pending approvals — approval requests appear as dialogs in the desktop app.</p></div>
+          <p class="core-note">Approvals are answered in the desktop app's dialog — this list is read-only. There is no approval queue: one dialog waits at a time.</p>
+        </div>
+        <div class="core-card">
+          <h3>Recent Activity</h3>
+          <div class="activity-list core-activity-list" id="coreActivityList"></div>
+          <p class="activity-empty" id="coreActivityEmpty">No recent activity</p>
+        </div>
+      </div>
     </section>
 
     <section class="secondary-view panel hidden" id="secondaryView">

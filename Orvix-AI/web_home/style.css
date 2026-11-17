@@ -500,3 +500,70 @@ body::after{background:radial-gradient(620px 380px at 16% -6%,rgba(0,140,255,.17
 .perf-processes-table td:nth-child(2),.perf-processes-table td:nth-child(3){color:var(--cyan);font-weight:800}
 .perf-processes-table tbody tr:last-child td{border-bottom:none}
 .perf-processes-empty{font-size:12px;color:var(--muted);margin:4px 0 6px}
+
+/* ==========================================================================
+   Command Center Phase 8 — AI Core page, hero controls made real,
+   and personality themes.
+
+   Personality themes: the payload's character drives a
+   data-character attribute on the page root (<html>); the rules
+   below switch ONLY the ambient accent variables (--accent /
+   --accent-rgb) and the surfaces that consume them — the aurora
+   sheen, the ambient body glows, the panels' gradient edge tint
+   and the character-card accents. The values mirror
+   orvix/character_theme.py exactly (a unit test asserts they
+   never drift). Core state colours are NOT touched: the reactor
+   hues, the hero status pill and the FX canvas palette stay keyed
+   to data-state / FX_STATE_COLORS, so the live state remains the
+   primary signal for every character.
+   ========================================================================== */
+:root{--accent:#00DFFF;--accent-rgb:0,223,255}
+:root[data-character="LUNA"]{--accent:#38BDF8;--accent-rgb:56,189,248}
+:root[data-character="RUBY"]{--accent:#E77CFF;--accent-rgb:231,124,255}
+:root[data-character="MAYA"]{--accent:#FFB36B;--accent-rgb:255,179,107}
+:root[data-character] .aurora{background:radial-gradient(42% 34% at 22% 30%,rgba(var(--accent-rgb),.14),transparent 70%),radial-gradient(38% 30% at 78% 22%,rgba(0,223,255,.10),transparent 70%),radial-gradient(46% 36% at 62% 82%,rgba(var(--accent-rgb),.09),transparent 70%),radial-gradient(30% 24% at 30% 78%,rgba(20,107,255,.09),transparent 70%)}
+:root[data-character] body::after{background:radial-gradient(620px 380px at 16% -6%,rgba(var(--accent-rgb),.16),transparent 70%),radial-gradient(680px 420px at 85% -10%,rgba(0,223,255,.12),transparent 70%),radial-gradient(520px 360px at 97% 62%,rgba(var(--accent-rgb),.08),transparent 70%),radial-gradient(920px 620px at 50% 118%,rgba(20,107,255,.12),transparent 70%),radial-gradient(ellipse at center,transparent 52%,rgba(1,4,10,.5) 100%)}
+:root[data-character] .panel{background:linear-gradient(145deg,rgba(12,38,66,.72),rgba(4,13,26,.78)) padding-box,linear-gradient(150deg,rgba(var(--accent-rgb),.75),rgba(0,140,255,.16) 42%,rgba(var(--accent-rgb),.5)) border-box}
+:root[data-character] .character.selected{border-color:var(--accent);box-shadow:0 0 20px rgba(var(--accent-rgb),.5),inset 0 1px 0 rgba(190,240,255,.2)}
+:root[data-character] .character.selected i{background:var(--accent);border-color:var(--accent);box-shadow:0 0 10px var(--accent)}
+:root[data-character] .character.selected .character-art{text-shadow:0 0 18px var(--accent)}
+
+/* Hero controls made real (audit Bugs #1): the caption pills are
+   <button class="hero-action"> now — the pill container styling is
+   unchanged; the buttons inherit its typography, glow with the
+   character accent on hover, and show the same disabled
+   presentation as the other bridge controls when standalone. */
+.hero-action{background:none;border:0;padding:0;font:inherit;color:inherit;letter-spacing:inherit}
+.hero-action:hover:not(:disabled){color:var(--accent);text-shadow:0 0 10px rgba(var(--accent-rgb),.85)}
+.hero-action:disabled{opacity:.45;cursor:not-allowed}
+@keyframes resultFlash{0%,100%{box-shadow:none}25%,65%{box-shadow:0 0 0 2px var(--accent),0 0 26px rgba(var(--accent-rgb),.45)}}
+.message.result-flash{animation:resultFlash 1.2s ease-in-out 2;border-radius:10px}
+
+/* AI Core page: state panel (the eight core states with the live
+   one highlighted in its own state hue, plus the separate OFFLINE
+   row that is the bridge-disconnected presentation only), the
+   current operation, the read-only pending-approvals block and
+   the activity feed. Everything renders from the bridge payload. */
+.core-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:12px;margin-top:16px}
+.core-card{padding:16px;border:1px solid #12628f;border-radius:12px;background:#08213b}
+.core-card h3{margin:0 0 10px;color:var(--cyan);font-size:12px;letter-spacing:1px;text-transform:uppercase}
+.core-card h3:not(:first-of-type){margin-top:20px}
+.core-state-list{display:flex;flex-direction:column;gap:6px}
+.core-state-row{--row-accent:#00dfff;display:flex;align-items:center;gap:9px;padding:8px 12px;border:1px solid #0d4a6e;border-radius:10px;background:#06213b;font-size:11px;font-weight:800;letter-spacing:1px;color:#87a9c5}
+.core-state-row[data-core-state="listening"]{--row-accent:#00e88f}
+.core-state-row[data-core-state="thinking"]{--row-accent:#a78bfa}
+.core-state-row[data-core-state="processing"]{--row-accent:#ffb020}
+.core-state-row[data-core-state="executing"]{--row-accent:#38bdf8}
+.core-state-row[data-core-state="speaking"]{--row-accent:#2dd4bf}
+.core-state-row[data-core-state="completed"]{--row-accent:#00e88f}
+.core-state-row[data-core-state="error"]{--row-accent:#ff4d5e}
+.core-state-row[data-core-state="offline"]{--row-accent:#ff9d94;border-style:dashed}
+.core-state-row.live{color:#fff;border-color:var(--row-accent);background:#0a2c4c;box-shadow:0 0 14px -2px var(--row-accent)}
+.core-state-dot{width:9px;height:9px;border-radius:50%;background:var(--row-accent);box-shadow:0 0 8px var(--row-accent)}
+.core-note{font-size:11px;line-height:1.55;color:#87a9c5;margin:10px 0 0}
+.core-operation{font-size:13px;color:var(--cyan);overflow-wrap:anywhere}
+.core-approval-waiting{color:#ffb020;font-size:12px}
+.core-approval-title{font-size:12px;color:#eaf6ff;font-weight:700;margin:8px 0 0;overflow-wrap:anywhere}
+.core-approval-message{font-size:11px;line-height:1.55;color:#c8ddef;margin:4px 0 0;overflow-wrap:anywhere;white-space:pre-wrap}
+.core-activity-list{padding:0}
+.core-card .activity-empty{margin:4px 0 6px}

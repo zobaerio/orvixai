@@ -47,6 +47,7 @@ from .home_data import (
 )
 from .settings import ENDPOINT_HEALTH_STATES
 from .providers import PROVIDERS, configured_providers
+from .character_theme import character_accent
 from .hud_data import build_hud_panels, build_task_entries, task_current_step
 from .memory import CATEGORIES as MEMORY_CATEGORIES
 from .ui_formatters import format_message_time
@@ -434,6 +435,37 @@ def _current_operation_payload(records) -> dict | None:
             continue
         return {"text": text, "status": status, "command": command}
     return None
+
+
+def _approvals_payload(app) -> dict:
+    """Pending-approvals block for the payload (Phase 8).
+
+    The desktop app has NO approval queue: an approval request is
+    a single modal Tk dialog (``app._request_approval``) that
+    blocks the requesting worker until the user answers, so at
+    most one request can be waiting at a time. What is honestly
+    knowable — and all this block claims — is whether that dialog
+    is open right now (``app._approval_dialog``) and, when the app
+    recorded it in ``app._approval_request``, the waiting
+    request's title and message. The page renders this read-only:
+    answering always happens in the desktop dialog itself.
+
+    Attributes are read defensively like the rest of this module:
+    an app that exposes neither attribute reports
+    ``dialogOpen: False`` with no title/message — it never invents
+    a pending approval.
+    """
+    dialog_open = getattr(app, "_approval_dialog", None) is not None
+    request = getattr(app, "_approval_request", None)
+    title = None
+    message = None
+    if dialog_open and isinstance(request, dict):
+        raw_title = request.get("title")
+        raw_message = request.get("message")
+        title = str(raw_title) if raw_title else None
+        message = str(raw_message) if raw_message else None
+    return {"dialogOpen": bool(dialog_open), "title": title,
+            "message": message}
 
 
 def _notifications_payload(app):
@@ -972,6 +1004,13 @@ def build_state_payload(app, stats=None, memory_query=None,
         "controlCenter": _control_center_payload(app, task_records),
         "activity": _activity_payload(app),
         "currentOperation": _current_operation_payload(task_records),
+        # Command Center Phase 8 (additive): the pending-approvals
+        # block — whether the desktop app's single modal approval
+        # dialog is open right now, and the waiting request's
+        # title/message when the app recorded them. There is no
+        # approval queue to list; the page shows this read-only and
+        # answering stays in the desktop dialog.
+        "approvals": _approvals_payload(app),
         # Command Center Phase 3 (additive): the Notification
         # Center block — latest records + total unread count from
         # the app's persistent store, or None when the app has no
@@ -1035,6 +1074,12 @@ def build_state_payload(app, stats=None, memory_query=None,
         },
         "core": {"mode": core_mode, "state": core_state_key(core_mode)},
         "character": str(selected) if selected is not None else "luna",
+        # Command Center Phase 8 (additive): the selected
+        # character's AMBIENT accent (orvix/character_theme.py) —
+        # the page's data-character attribute selects the matching
+        # CSS variables; core state colours are never derived from
+        # this value.
+        "characterAccent": character_accent(selected),
         "characters": _character_entries(app),
         "wakeEnabled": wake_enabled,
         # Command Center Phase 4 (additive): Take Control mode, read
