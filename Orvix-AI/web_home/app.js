@@ -194,6 +194,19 @@ function setConnectedUI(isConnected) {
   } else {
     updateModelPill(lastState);
   }
+  updateHeroButtons();
+}
+
+// Hero controls (Command Center Phase 8, audit Bugs #1): the hero
+// caption's three pills are real buttons now — Speak, Command and
+// Get Results. Like the Emergency zone's controls, they are bridge
+// controls: standalone (no bridge) they are disabled with the
+// honest not-connected presentation rather than pretending to act.
+function updateHeroButtons() {
+  ["#heroSpeakButton", "#heroCommandButton", "#heroResultsButton"].forEach((selector) => {
+    const button = $(selector);
+    if (button) button.disabled = !connected;
+  });
 }
 
 // Model pill wording from the payload's endpoint state, which the
@@ -747,6 +760,131 @@ function renderActivity(state) {
 }
 
 // ---------------------------------------------------------------------------
+// AI Core page (Command Center Phase 8): the Core nav destination
+// renders ONLY from the same pushed payload as the home panels —
+// the core state (state panel), the current operation, the
+// activity feed and the approvals block. The state panel lists
+// exactly the eight states of orvix/core_states.py; the live one
+// is highlighted from the payload's core.state (the bridge's
+// "ready" key is the idle state under its bridge name). OFFLINE
+// is NOT a ninth core state (audit Bugs #7): it is this page's
+// presentation for a disconnected bridge, shown as its own row
+// whenever no bridge is connected, with no core state highlighted.
+// ---------------------------------------------------------------------------
+const CORE_STATE_KEYS = ["idle", "listening", "thinking", "processing",
+  "executing", "speaking", "completed", "error"];
+function corePanelStateKey(state) {
+  const core = state && state.core ? state.core : {};
+  const key = String(core.state || "idle").toLowerCase();
+  if (key === "ready") return "idle";
+  return CORE_STATE_KEYS.indexOf(key) !== -1 ? key : "idle";
+}
+function renderCore(state) {
+  const rows = $$("#coreStateList .core-state-row");
+  if (rows.length) {
+    const liveKey = connected && state ? corePanelStateKey(state) : null;
+    rows.forEach((row) => {
+      const key = row.dataset.coreState;
+      row.classList.toggle("live", connected ? key === liveKey : key === "offline");
+    });
+  }
+  const modeLine = $("#coreModeLine");
+  if (modeLine) {
+    if (!connected || !state) modeLine.textContent = "Core mode: — (bridge disconnected)";
+    else {
+      const core = state.core || {};
+      modeLine.textContent = "Core mode: " + (core.mode || "—");
+    }
+  }
+  const operation = $("#coreCurrentOperation");
+  if (operation) {
+    const current = connected && state && state.currentOperation
+      ? state.currentOperation : null;
+    operation.textContent = current && current.text
+      ? String(current.text)
+      : "Idle — no task running";
+  }
+  renderCoreApprovals(state);
+  const list = $("#coreActivityList");
+  const empty = $("#coreActivityEmpty");
+  if (list && empty) {
+    list.replaceChildren();
+    const entries = connected && state && Array.isArray(state.activity)
+      ? state.activity : [];
+    if (!entries.length) {
+      empty.textContent = connected
+        ? "No recent activity"
+        : "Not connected — desktop bridge required.";
+      empty.classList.remove("hidden");
+    } else {
+      empty.classList.add("hidden");
+      entries.forEach((entry) => {
+        if (!entry || !entry.text) return;
+        const row = document.createElement("div");
+        row.className = "activity-row";
+        const text = document.createElement("span");
+        text.className = "activity-text";
+        text.textContent = String(entry.text);
+        row.appendChild(text);
+        if (entry.time) {
+          const time = document.createElement("span");
+          time.className = "activity-time";
+          time.textContent = String(entry.time);
+          row.appendChild(time);
+        }
+        list.appendChild(row);
+      });
+    }
+  }
+}
+
+// Pending approvals (Phase 8): the desktop app has no approval
+// queue — an approval request is ONE modal dialog in the desktop
+// app that blocks until answered. The payload's approvals block
+// therefore reports only whether that dialog is open right now
+// and, when the app recorded it, the waiting request's title and
+// message. This panel is read-only by design: answering happens
+// in the desktop dialog, never here.
+function renderCoreApprovals(state) {
+  const box = $("#coreApprovals");
+  if (!box) return;
+  box.replaceChildren();
+  const note = document.createElement("p");
+  note.className = "core-note";
+  if (!connected) {
+    note.textContent = "Not connected — desktop bridge required.";
+    box.appendChild(note);
+    return;
+  }
+  const approvals = state && state.approvals ? state.approvals : null;
+  if (approvals && approvals.dialogOpen) {
+    const head = document.createElement("b");
+    head.className = "core-approval-waiting";
+    head.textContent = "⏳ Approval requested — waiting in the desktop app";
+    box.appendChild(head);
+    if (approvals.title) {
+      const title = document.createElement("p");
+      title.className = "core-approval-title";
+      title.textContent = String(approvals.title);
+      box.appendChild(title);
+    }
+    if (approvals.message) {
+      const message = document.createElement("p");
+      message.className = "core-approval-message";
+      message.textContent = String(approvals.message);
+      box.appendChild(message);
+    }
+    const hint = document.createElement("p");
+    hint.className = "core-note";
+    hint.textContent = "Answer it in the desktop dialog — approvals cannot be answered from this page.";
+    box.appendChild(hint);
+    return;
+  }
+  note.textContent = "No pending approvals — approval requests appear as dialogs in the desktop app.";
+  box.appendChild(note);
+}
+
+// ---------------------------------------------------------------------------
 // Python -> JS pushes. State shape (all fields may be missing/null):
 // { version, stats:{cpu, ram, storage, osName, machine, uptime},
 //   model:{name, endpoint, statusLines:[{label, value, state}]},
@@ -815,6 +953,7 @@ window.orvixPushState = function (state) {
   renderDiagnostics(state);
   renderHomeTasks(state);
   renderActivity(state);
+  renderCore(state);
   renderNotifications(state);
   renderEmergency(state);
   renderMemory(state);
@@ -823,6 +962,12 @@ window.orvixPushState = function (state) {
 
   if (state.character) {
     const key = String(state.character).toUpperCase();
+    // Personality theme (Phase 8): the payload's character drives
+    // the page root's data-character attribute; the stylesheet's
+    // per-character rules switch ONLY the ambient accent variables
+    // (aurora, panel edge tint, character-card accents). Core
+    // state colours are keyed to data-state, never to this.
+    document.documentElement.dataset.character = key;
     const match = $$(".character").find((item) => item.dataset.character === key);
     if (match) {
       $$(".character").forEach((item) => item.classList.toggle("selected", item === match));
@@ -1305,6 +1450,10 @@ $$(".character").forEach(button => button.addEventListener("click", () => {
   button.classList.add("selected");
   const name = button.dataset.character;
   $("#activeCharacter").textContent = name;
+  // Local ambient tint follows the local selection immediately,
+  // exactly like the .selected card styling above; the bridge
+  // push re-confirms it from the app's persisted selection.
+  document.documentElement.dataset.character = String(name || "").toUpperCase();
   if (connected) {
     // Live mode: the app confirms with its own pushed system message.
     callBridge("selectCharacter", [name]);
@@ -1500,6 +1649,42 @@ $("#micButton").addEventListener("click", () => {
   try { recognition.start(); } catch (_) { toast("Voice input is already active."); }
 });
 
+// Hero controls (Command Center Phase 8, audit Bugs #1) — the three
+// hero pills are real controls with the pill styling kept:
+// - Speak runs the composer's own mic path (the exact handler
+//   above, bridge startListening included) by clicking the mic
+//   button, so there is only one listen path to maintain.
+// - Command focuses the composer input on the home view.
+// - Get Results goes to where results actually live: the latest
+//   assistant message in the chat (replies and action outcomes are
+//   presented there; the Tasks view holds records, not results).
+//   It scrolls that message into view and flashes it; when no
+//   assistant message exists yet it says so honestly.
+// All three are disabled standalone by updateHeroButtons above.
+$("#heroSpeakButton").addEventListener("click", () => {
+  const mic = $("#micButton");
+  if (mic) mic.click();
+});
+$("#heroCommandButton").addEventListener("click", () => {
+  showTab("home");
+  const input = $("#commandInput");
+  if (!input) return;
+  input.scrollIntoView({ behavior: "smooth", block: "center" });
+  input.focus();
+});
+$("#heroResultsButton").addEventListener("click", () => {
+  showTab("home");
+  const log = $("#chatLog");
+  const messages = log ? [...log.querySelectorAll(".assistant-message")] : [];
+  const latest = messages.length ? messages[messages.length - 1] : null;
+  if (!latest) { toast("No results yet — run a command first."); return; }
+  latest.scrollIntoView({ behavior: "smooth", block: "center" });
+  latest.classList.remove("result-flash");
+  void latest.offsetWidth;
+  latest.classList.add("result-flash");
+  setTimeout(() => latest.classList.remove("result-flash"), 2600);
+});
+
 $("#modelSettingsButton").addEventListener("click", () => {
   if (connected && bridgeApi && typeof bridgeApi.openConsole === "function") { callBridge("openConsole", []); return; }
   showTab("settings");
@@ -1617,6 +1802,21 @@ const tabContent = {
   ]}
 };
 function showTab(tab) {
+  // AI Core view (Phase 8): toggled here for every tab so each
+  // branch below only has to handle its own view, exactly like the
+  // branches treat each other's views.
+  const coreViewEl = $("#coreView");
+  if (coreViewEl) coreViewEl.classList.toggle("hidden", tab !== "core");
+  if (tab === "core") {
+    $("#homeView").classList.add("hidden"); $("#secondaryView").classList.add("hidden");
+    const tv = $("#tasksView"); if (tv) tv.classList.add("hidden");
+    const mv = $("#memoryView"); if (mv) mv.classList.add("hidden");
+    const mov = $("#modelsView"); if (mov) mov.classList.add("hidden");
+    const pv = $("#performanceView"); if (pv) pv.classList.add("hidden");
+    renderCore(lastState);
+    $$(".nav-item").forEach(item => item.classList.toggle("active", item.dataset.tab === tab));
+    return;
+  }
   const tasksView = $("#tasksView");
   const memoryView = $("#memoryView");
   const modelsView = $("#modelsView");
@@ -1711,6 +1911,7 @@ $$(".nav-item").forEach(button => button.addEventListener("click", () => {
 }));
 $$("[data-tab='tools']").forEach(button => button.addEventListener("click", () => showTab("tools")));
 $("#backHome").addEventListener("click", () => showTab("home"));
+$("#coreBackHome").addEventListener("click", () => showTab("home"));
 $("#tasksBackHome").addEventListener("click", () => showTab("home"));
 $("#memoryBackHome").addEventListener("click", () => showTab("home"));
 $("#modelsBackHome").addEventListener("click", () => showTab("home"));
@@ -1727,6 +1928,7 @@ renderTasks();
 renderDiagnostics(null);
 renderHomeTasks(null);
 renderActivity(null);
+renderCore(null);
 renderNotifications(null);
 renderEmergency(null);
 renderMemory(null);
