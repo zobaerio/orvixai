@@ -30,7 +30,7 @@ from orvix.home_data import (
     format_uptime, gauge_color, gauge_extent_deg, model_status_lines,
     performance_caption, quick_action_tiles,
 )
-from orvix.app_bridge import DesktopOutcome, app_brain_configured, build_app_chief, format_brain_result, map_brain_status, route_decision, run_brain_command
+from orvix.app_bridge import DesktopOutcome, app_brain_configured, build_app_chief, format_brain_result, map_brain_status, route_decision, run_brain_command, take_control_enabled
 from orvix.control_center import build_snapshot as _build_control_center_snapshot
 from orvix.taskqueue import TaskQueue
 from orvix.router import BudgetTracker
@@ -1221,6 +1221,12 @@ class OrvixDesktop:
         )
         self.cancel_task_btn.pack(fill="x", pady=(0, 5))
         tk.Button(
+            task_buttons, text="⛔  EMERGENCY STOP", command=self._stop_all,
+            bg="#7f1d1d", fg="#ffffff", activebackground="#991b1b", activeforeground="#ffffff",
+            relief="flat", bd=0, font=("Segoe UI Semibold", 8, "bold"), padx=8, pady=8,
+            cursor="hand2"
+        ).pack(fill="x", pady=(0, 5))
+        tk.Button(
             task_buttons, text="▤  TASK HISTORY", command=self._open_task_history,
             bg="#102b40", fg=ACCENT, activebackground="#194661", activeforeground=TEXT,
             relief="flat", bd=0, font=("Segoe UI Semibold", 8, "bold"), padx=8, pady=8,
@@ -1851,10 +1857,14 @@ class OrvixDesktop:
             audit_log=audit,
             lesson_log=lessons,
             desktop_execute=lambda step_text: self._brain_desktop_execute(step_text, task_id, cancel_event),
-            confirmer=lambda action, category: self._request_approval(
-                "Autonomous Brain — confirmation",
-                f"The Autonomous Brain wants to run a {category} desktop step:\n\n{action}\n\nAllow it? (Each file/app action will still ask for its own approval.)",
-            ),
+            confirmer=self._brain_step_confirmer,
+            # Take Control (Phase 4): a callable over the LIVE
+            # settings, consulted at the delegation boundary before
+            # every delegated desktop step — toggling it mid-task
+            # (from the web home) applies to the next step, and
+            # queued Brain execution cannot auto-start a desktop
+            # step without approval while it is on.
+            take_control=lambda: take_control_enabled(self.settings),
             on_step=lambda step, phase: self._record_task_step(task_id, f"Brain · {step.agent}: {step.title} — {phase}"),
             is_cancelled=cancel_event.is_set,
         )
@@ -2250,6 +2260,250 @@ class OrvixDesktop:
                 self._approval_dialog.after(0, self._dismiss_approval_dialog)
             except tk.TclError:
                 pass
+
+    # -- Emergency Stop + Take Control (Command Center Phase 4) -----
+
+    def _control_audit_log(self):
+        """The shared AuditLog for Emergency Stop / Take Control
+        events, or None when it cannot be obtained.
+
+        This is the SAME AuditLog the Brain/Chief path writes to —
+        element 2 of the shared ORVIX state objects built by
+        ``_shared_orvix_state`` (the app layer's existing logging
+        route, also used by ``_hud_control_center_snapshot`` and
+        ``_run_brain_task``). No parallel log is created. The cached
+        objects are preferred: building the shared state constructs
+        a TaskQueue, whose startup recovery must not run as a side
+        effect of merely looking for the audit log while a Brain
+        task is running.
+        """
+        objects = getattr(self, "_hud_cc_objects", None)
+        if objects is not None:
+            try:
+                audit = objects[2]
+            except Exception:
+                audit = None
+            if audit is not None:
+                return audit
+        try:
+            return self._shared_orvix_state()[2]
+        except Exception:
+            return None
+
+    def _log_control_event(self, event: str, details: dict) -> None:
+        """Best-effort AuditLog entry for a Phase 4 control action.
+
+        A logging failure must never break the control itself, so
+        every failure is swallowed — the in-app SYSTEM message from
+        the caller remains the user-visible record.
+        """
+        audit = self._control_audit_log()
+        if audit is None:
+            return
+        try:
+            audit.log(event, actor="user", details=details)
+        except Exception:
+            pass
+
+    def _running_brain_queue_items(self):
+        """(queue, running items) for the Brain's TaskQueue.
+
+        Read from the CACHED shared state objects only: a Brain
+        queue item can only be running when ``_run_brain_task`` has
+        already built those objects, and constructing a fresh
+        TaskQueue here would run its startup recovery (running ->
+        pending) as a destructive side effect. No cached objects
+        therefore honestly means no Brain item is running via this
+        app. Any read failure yields an empty list, never a guess.
+        """
+        objects = getattr(self, "_hud_cc_objects", None)
+        if objects is None:
+            return (None, [])
+        try:
+            queue = objects[0]
+        except Exception:
+            return (None, [])
+        if queue is None:
+            return (None, [])
+        try:
+            rows = queue.list(status="running", limit=50)
+        except Exception:
+            return (queue, [])
+        items = [row for row in (rows or [])
+                 if isinstance(row, dict) and row.get("id")]
+        return (queue, items)
+
+    def _stop_all(self) -> dict:
+        """Emergency Stop: halt everything that is currently active.
+
+        A composition of the existing machinery, not a new stopping
+        mechanism: (1) the current desktop task is cancelled via
+        ``_cancel_current_task`` (which sets the task's cancel
+        event, marks its record ``cancelling``, dismisses any open
+        approval dialog and disarms queued auto-run), (2) speech is
+        stopped via ``_stop_speaking``, (3) the queued auto-run is
+        disarmed unconditionally, so queued commands stay saved but
+        cannot auto-start even when no task was active, and (4) any
+        running item in the Brain's TaskQueue is cancelled via
+        ``TaskQueue.cancel``.
+
+        Idempotent and safe when nothing is running: every step is
+        a guarded no-op then, and the returned summary plus the
+        SYSTEM message honestly say that nothing was active. The
+        message carries the same honest limit as the existing
+        cancellation message — an already-running network request
+        or desktop action may need to finish first, and a started
+        external action cannot be undone automatically.
+
+        Returns a summary dict (also written to the AuditLog as an
+        ``emergency_stop`` event) so bridge callers and tests can
+        see exactly what was and was not active.
+        """
+        cancel_event = getattr(self, "_active_task_cancel_event", None)
+        task_active = bool(
+            getattr(self, "_busy", False)
+            and cancel_event is not None
+            and not cancel_event.is_set())
+        speech = getattr(self, "speech", None)
+        speaking = bool(getattr(speech, "_playing", False)) if speech is not None else False
+        queue_was_armed = bool(getattr(self, "_queue_armed", False))
+        brain_queue, brain_running = self._running_brain_queue_items()
+
+        try:
+            self._cancel_current_task()
+        except Exception:
+            pass
+        cancellation_requested = bool(
+            task_active and cancel_event is not None and cancel_event.is_set())
+
+        try:
+            self._stop_speaking()
+        except Exception:
+            pass
+
+        # Disarm queued auto-run even when _cancel_current_task had
+        # no active task to cancel (it only disarms on that path).
+        try:
+            self._queue_armed = False
+        except Exception:
+            pass
+
+        brain_cancelled = 0
+        if brain_queue is not None:
+            for item in brain_running:
+                try:
+                    brain_queue.cancel(item["id"])
+                    brain_cancelled += 1
+                except Exception:
+                    pass
+
+        summary = {
+            "task_active": task_active,
+            "cancellation_requested": cancellation_requested,
+            "speaking": speaking,
+            "speech_stop_requested": True,
+            "queue_was_armed": queue_was_armed,
+            "queue_disarmed": queue_was_armed,
+            "brain_running": len(brain_running),
+            "brain_cancelled": brain_cancelled,
+            "anything_active": bool(
+                task_active or speaking or queue_was_armed or brain_running),
+        }
+        self._log_control_event("emergency_stop", dict(summary))
+
+        limit = ("An already-running network request or desktop action may need to "
+                 "finish first; a started external action cannot be undone automatically.")
+        if summary["anything_active"]:
+            parts = []
+            if cancellation_requested:
+                parts.append("cancellation requested for the current task")
+            elif task_active:
+                parts.append("the current task could not be cancelled")
+            if speaking:
+                parts.append("speech stopped")
+            else:
+                parts.append("speech stop requested")
+            if queue_was_armed:
+                parts.append("queued commands disarmed — they remain saved and will not auto-run")
+            if brain_cancelled:
+                parts.append(f"{brain_cancelled} running Brain queue task(s) cancelled")
+            text = "Emergency Stop: " + "; ".join(parts) + ". " + limit
+        else:
+            text = ("Emergency Stop: nothing was running — no active task, speech, "
+                    "queued commands or Brain task to stop. " + limit)
+        try:
+            self._write_message("SYSTEM", text, "system")
+        except Exception:
+            pass
+        try:
+            self._push_activity("Emergency Stop")
+        except Exception:
+            pass
+        return summary
+
+    def _set_take_control_from_web(self, enabled=False) -> bool:
+        """Bridge entry point for the web Take Control toggle.
+
+        Runs on the Tk/event thread (the bridge only enqueues it),
+        like every other bridge write. Persists the flag in settings
+        exactly like the app's other toggles (the ``take_control``
+        key in settings DEFAULTS, saved via ``save_settings``), and
+        writes a ``take_control_changed`` AuditLog event. While the
+        flag is on, the delegation boundary in
+        ``orvix/app_bridge.py`` forces explicit approval for every
+        delegated desktop step; the live flag is consulted per step
+        (see ``_run_brain_task``), so toggling applies to the next
+        step, not just the next task. Idempotent: repeating the
+        current state saves and logs nothing again. Returns the
+        resulting state.
+        """
+        want = bool(enabled)
+        settings = getattr(self, "settings", None)
+        if not isinstance(settings, dict):
+            return False
+        current = bool(settings.get("take_control", False))
+        if want == current:
+            return current
+        settings["take_control"] = want
+        try:
+            save_settings(settings)
+        except Exception:
+            pass
+        self._log_control_event("take_control_changed", {"enabled": want})
+        try:
+            if want:
+                message = ("Take Control is ON: every delegated desktop step from the "
+                           "Brain/Chief path will ask for your explicit approval before "
+                           "it runs, and queued Brain steps will not auto-start without "
+                           "that approval.")
+            else:
+                message = ("Take Control is OFF: delegated desktop steps follow the "
+                           "normal approval rules again — sensitive steps still ask "
+                           "for approval, as before.")
+            self._write_message("SYSTEM", message, "system")
+        except Exception:
+            pass
+        return want
+
+    def _brain_step_confirmer(self, action, category) -> bool:
+        """Approval prompt for one delegated Brain/Chief desktop step.
+
+        Sensitive categories keep the existing wording. A step gated
+        only because Take Control is on (category ``take_control``)
+        says so plainly, so the user knows why a normally ungated
+        step is asking.
+        """
+        if str(category) == "take_control":
+            return self._request_approval(
+                "Take Control — approval needed",
+                "Take Control is ON, so this delegated desktop step needs your "
+                f"approval before it runs:\n\n{action}\n\nAllow it? (Each file/app "
+                "action will still ask for its own approval.)",
+            )
+        return self._request_approval(
+            "Autonomous Brain — confirmation",
+            f"The Autonomous Brain wants to run a {category} desktop step:\n\n{action}\n\nAllow it? (Each file/app action will still ask for its own approval.)",
+        )
 
     def _open_system_health(self) -> None:
         """Show local preflight checks; never make network requests or inspect user files."""

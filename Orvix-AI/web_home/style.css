@@ -371,3 +371,29 @@ body::after{background:radial-gradient(620px 380px at 16% -6%,rgba(0,140,255,.17
 .notification-time{font-size:10px;color:#7295b4;font-weight:700}
 .notification-title{display:block;font-size:12px;color:#eaf6ff}
 .notification-text{font-size:11px;line-height:1.5;color:#b7cee3;margin:2px 0 0}
+
+/* ==========================================================================
+   Command Center Phase 4 — Emergency zone: the far-right panel with
+   the EMERGENCY STOP button (red, unmistakable, with its in-page
+   confirm step) and the TAKE CONTROL toggle. Disabled controls are
+   the standalone not-connected presentation: visibly inert, never
+   styled as if they could fire.
+   ========================================================================== */
+.emergency-panel{padding-bottom:14px;border-color:rgba(255,77,94,.45)}
+.emergency-icon{color:#ff4d5e}
+.emergency-note{font-size:11px;line-height:1.55;color:#b7cee3;margin:2px 18px 12px}
+.emergency-stop-button{display:block;width:calc(100% - 36px);margin:0 18px;padding:13px 10px;border:1px solid #ff4d5e;border-radius:12px;background:linear-gradient(160deg,#7f1d1d,#991b1b);color:#fff;font-weight:900;letter-spacing:1.5px;font-size:13px;box-shadow:0 0 18px rgba(255,77,94,.35)}
+.emergency-stop-button:hover:not(:disabled){background:linear-gradient(160deg,#991b1b,#b91c1c);box-shadow:0 0 24px rgba(255,77,94,.55)}
+.emergency-stop-button:disabled{opacity:.45;cursor:not-allowed;box-shadow:none}
+.emergency-confirm{margin:12px 18px 0;padding:11px 12px;border:1px solid #ff4d5e;border-radius:12px;background:#2a0d16}
+.emergency-confirm p{font-size:11px;line-height:1.5;color:#ffd7db;margin:0 0 10px}
+.emergency-confirm-actions{display:flex;gap:8px}
+.emergency-confirm-button{flex:1;padding:9px 8px;border:1px solid #ff4d5e;border-radius:9px;background:#991b1b;color:#fff;font-weight:800;font-size:11px}
+.emergency-confirm-button:disabled{opacity:.45;cursor:not-allowed}
+.emergency-cancel-button{flex:1;padding:9px 8px;border:1px solid #4b7899;border-radius:9px;background:#082844;color:#c8ddef;font-weight:800;font-size:11px}
+.take-control-row{display:flex;align-items:center;justify-content:space-between;gap:12px;margin:16px 18px 0;padding-top:14px;border-top:1px solid #0d3555}
+.take-control-copy b{display:block;font-size:12px;color:#eaf6ff}
+.take-control-copy small{display:block;font-size:10px;line-height:1.45;color:#87a9c5;margin-top:3px}
+.take-control-row .switch{flex:0 0 auto}
+.take-control-row .switch input:disabled+span{opacity:.45}
+.take-control-state{font-size:10px;font-weight:800;letter-spacing:.6px;color:#ff9d94;margin:10px 18px 0}

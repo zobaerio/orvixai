@@ -673,6 +673,14 @@ def build_state_payload(app, stats=None) -> dict:
         "character": str(selected) if selected is not None else "luna",
         "characters": _character_entries(app),
         "wakeEnabled": wake_enabled,
+        # Command Center Phase 4 (additive): Take Control mode, read
+        # from the persisted settings flag the app owns — the page
+        # renders its toggle from this value on every push and never
+        # keeps a local-only copy of the state. "running" mirrors
+        # the busy flag below under the name the Emergency zone
+        # cares about: whether anything is currently running.
+        "takeControl": bool(settings.get("take_control", False)),
+        "running": bool(getattr(app, "_busy", False)),
         # The configured wake phrase, so the page's wake pill displays
         # the exact phrase the wake-word matcher listens for.
         "wakePhrase": str(settings.get("wake_phrase") or "hey orvix"),
@@ -837,6 +845,35 @@ class OrvixWebHomeApi:
             # desktop prompt. Only the notification history is
             # cleared — task history and settings are never touched.
             self._enqueue("_clear_notifications_from_web", ())
+            return {"ok": True}
+        except Exception as exc:
+            return {"ok": False, "error": type(exc).__name__}
+
+    def stopAll(self):
+        try:
+            # Emergency Stop (Command Center Phase 4). The web page
+            # has already run its in-page confirm step, so the
+            # enqueued app method — OrvixDesktop._stop_all, the
+            # composition of the existing cancel / stop-speaking /
+            # queue-disarm / Brain-queue-cancel machinery — runs
+            # without a second desktop prompt. A write, so it
+            # follows the same enqueue discipline as every other
+            # mutating bridge method: nothing is stopped from this
+            # bridge thread.
+            self._enqueue("_stop_all", ())
+            return {"ok": True}
+        except Exception as exc:
+            return {"ok": False, "error": type(exc).__name__}
+
+    def setTakeControl(self, enabled=False):
+        try:
+            # Take Control (Command Center Phase 4): a write, so it
+            # follows the same enqueue discipline — the app method
+            # persists the settings flag and writes the audit entry
+            # on the Tk/event thread. The page's toggle renders from
+            # the payload's takeControl value on the next state push,
+            # never from a local-only copy of this call.
+            self._enqueue("_set_take_control_from_web", (bool(enabled),))
             return {"ok": True}
         except Exception as exc:
             return {"ok": False, "error": type(exc).__name__}

@@ -17,6 +17,11 @@ Design notes:
   callable, so all of that agent's approval gates stay in force.
   Sensitive desktop steps are additionally pre-checked by the
   fail-closed :class:`ConfirmationGate`.
+* Take Control (``take_control`` setting, default off): while on,
+  :class:`BridgedAgent` — the delegation boundary — forces EVERY
+  delegated desktop step through that same gate, so autonomous or
+  queued Brain execution cannot start a desktop step without the
+  user's explicit approval. Off, nothing changes.
 """
 from __future__ import annotations
 
@@ -28,15 +33,46 @@ from typing import Callable, Optional
 from .agents import AGENT_SPECS, Agent, AgentResult, ChiefIntelligenceAgent
 from .providers import APP_PROVIDER_NAME, build_app_client, build_clients
 from .router import BudgetTracker, Orchestrator
-from .security import AuditLog, ConfirmationGate, ConfirmationRequired
+from .security import TAKE_CONTROL_CATEGORY, AuditLog, ConfirmationGate, ConfirmationRequired
 from .settings import is_local_api_endpoint, validate_api_key_transport
 from .taskqueue import TaskQueue
 
 BRAIN_SETTING_KEY = "autonomous_brain"
 
+TAKE_CONTROL_SETTING_KEY = "take_control"
+
 
 def brain_setting_enabled(settings) -> bool:
     return bool(settings and settings.get(BRAIN_SETTING_KEY))
+
+
+def take_control_enabled(settings) -> bool:
+    """Whether Take Control mode is on in ``settings``.
+
+    Take Control is an app-level flag persisted in settings like the
+    other toggles (``take_control``, default off). While it is on,
+    every delegated desktop step requires explicit approval — see
+    :class:`BridgedAgent`, the delegation boundary where the check
+    lives. With it off, approval behaviour is exactly as before.
+    """
+    return bool(settings and settings.get(TAKE_CONTROL_SETTING_KEY))
+
+
+def _take_control_active(flag) -> bool:
+    """Resolve a Take Control flag that may be a bool or a callable.
+
+    A callable is consulted on every step, so turning Take Control
+    on or off mid-task takes effect on the very next delegated step
+    instead of only on the next task. A callable that raises is
+    treated as ON (fail-closed): a broken control check must force
+    approval, never silently skip it.
+    """
+    if callable(flag):
+        try:
+            return bool(flag())
+        except Exception:
+            return True
+    return bool(flag)
 
 
 def app_brain_configured(settings, api_key) -> tuple[bool, str]:
@@ -180,12 +216,30 @@ class DesktopOutcome:
 
 
 class BridgedAgent(Agent):
-    """Agent that routes desktop-action steps to the desktop executor."""
+    """Agent that routes desktop-action steps to the desktop executor.
 
-    def __init__(self, spec, orchestrator=None, *, desktop_execute=None, gate=None):
+    This is the delegation boundary — the single place a Chief step
+    becomes a real desktop action — so it is also where Take Control
+    is enforced. With Take Control off (the default), only sensitive
+    steps (see :func:`sensitive_category`) go through the
+    ConfirmationGate, exactly as before. With Take Control on, EVERY
+    desktop step goes through the gate: sensitive steps keep their
+    own category, the rest are checked under
+    ``TAKE_CONTROL_CATEGORY``. The gate stays fail-closed in both
+    modes — no gate, or a confirmer that does not approve, means the
+    executor is never called. Take Control can only ever ADD
+    approvals; it never bypasses or weakens an existing one.
+    """
+
+    def __init__(self, spec, orchestrator=None, *, desktop_execute=None, gate=None,
+                 take_control=False):
         super().__init__(spec, orchestrator)
         self.desktop_execute = desktop_execute
         self.gate = gate
+        # Bool or zero-arg callable returning bool (see
+        # _take_control_active); the app passes a callable over its
+        # live settings so a mid-task toggle applies to the next step.
+        self.take_control = take_control
 
     def run(self, task: str, context: Optional[dict] = None) -> AgentResult:
         context = context or {}
@@ -193,10 +247,16 @@ class BridgedAgent(Agent):
             return super().run(task, context)
         if self.desktop_execute is not None and classify_desktop_action(task):
             category = sensitive_category(task)
+            if category is None and _take_control_active(self.take_control):
+                category = TAKE_CONTROL_CATEGORY
             if category:
                 if self.gate is None:
-                    return AgentResult(self.name, False, "",
-                                       blocked_reason=f"sensitive desktop step ({category}) requires a confirmation gate")
+                    if category == TAKE_CONTROL_CATEGORY:
+                        reason = ("desktop step requires explicit approval under "
+                                  "Take Control, but no confirmation gate is configured")
+                    else:
+                        reason = f"sensitive desktop step ({category}) requires a confirmation gate"
+                    return AgentResult(self.name, False, "", blocked_reason=reason)
                 try:
                     self.gate.check(task, category)
                 except ConfirmationRequired as exc:
@@ -218,8 +278,9 @@ class BridgedAgent(Agent):
         return super().run(task, context)
 
 
-def build_app_agents(orchestrator, *, desktop_execute=None, gate=None) -> dict:
-    return {spec.name: BridgedAgent(spec, orchestrator, desktop_execute=desktop_execute, gate=gate)
+def build_app_agents(orchestrator, *, desktop_execute=None, gate=None, take_control=False) -> dict:
+    return {spec.name: BridgedAgent(spec, orchestrator, desktop_execute=desktop_execute, gate=gate,
+                                    take_control=take_control)
             for spec in AGENT_SPECS}
 
 
@@ -262,7 +323,7 @@ class AppChiefIntelligenceAgent(ChiefIntelligenceAgent):
 
 def build_app_chief(settings, api_key, *, data_dir=None, queue=None, budget=None, audit_log=None,
                     lesson_log=None, desktop_execute=None, confirmer=None, on_step=None,
-                    is_cancelled=None, transport=None, env=None) -> AppChiefIntelligenceAgent:
+                    is_cancelled=None, transport=None, env=None, take_control=False) -> AppChiefIntelligenceAgent:
     if data_dir is not None:
         data_path = Path(data_dir)
         data_path.mkdir(parents=True, exist_ok=True)
@@ -277,7 +338,8 @@ def build_app_chief(settings, api_key, *, data_dir=None, queue=None, budget=None
             lesson_log = LessonLog(data_path / "lessons.json")
     orchestrator = build_app_orchestrator(settings, api_key, budget=budget, transport=transport, env=env)
     gate = ConfirmationGate(confirmer=confirmer, audit=audit_log)
-    agents = build_app_agents(orchestrator, desktop_execute=desktop_execute, gate=gate)
+    agents = build_app_agents(orchestrator, desktop_execute=desktop_execute, gate=gate,
+                              take_control=take_control)
     return AppChiefIntelligenceAgent(orchestrator=orchestrator, agents=agents,
                                      lesson_log=lesson_log, audit_log=audit_log,
                                      on_step=on_step, is_cancelled=is_cancelled)
