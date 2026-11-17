@@ -60,6 +60,12 @@ DEFAULTS: dict[str, Any] = {
     "floating_hud_height": 164,
     "floating_hud_opacity": 1.0,
     "autonomous_brain": False,
+    # Take Control (Command Center Phase 4): when True, every
+    # delegated desktop step from the Brain/Chief path requires
+    # explicit approval before it runs (see orvix/app_bridge.py).
+    # Defaults to False — with it off, approval behaviour is exactly
+    # as before (only sensitive steps are gated).
+    "take_control": False,
     # WebView home: open the HTML home window at startup. Defaults to
     # True, matching webview_home_enabled's fallback when the key is
     # absent; the Settings checkbox persists the user's choice.

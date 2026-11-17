@@ -640,6 +640,7 @@ window.orvixPushState = function (state) {
   renderHomeTasks(state);
   renderActivity(state);
   renderNotifications(state);
+  renderEmergency(state);
 
   if (state.character) {
     const key = String(state.character).toUpperCase();
@@ -739,6 +740,39 @@ function renderNotifications(state) {
     }
     list.appendChild(row);
   });
+}
+
+// ---------------------------------------------------------------------------
+// Emergency zone (Command Center Phase 4): the far-right panel with
+// the EMERGENCY STOP button and the TAKE CONTROL toggle. Both
+// controls render ONLY from the payload / bridge connection state:
+// the toggle's checked state always comes from the payload's
+// takeControl value on a state push (never from a local click), and
+// standalone (no bridge) both controls are disabled with the honest
+// not-connected presentation. The stop button never fires on the
+// first click — it only reveals the in-page confirm step; the
+// bridge stopAll call happens exclusively from the confirm button.
+// ---------------------------------------------------------------------------
+function renderEmergency(state) {
+  const stopButton = $("#emergencyStopButton");
+  const confirmButton = $("#emergencyStopConfirm");
+  const toggle = $("#takeControlToggle");
+  const stateLine = $("#takeControlState");
+  const confirmBox = $("#emergencyConfirm");
+  const on = !!(connected && state && state.takeControl);
+  if (stopButton) stopButton.disabled = !connected;
+  if (confirmButton) confirmButton.disabled = !connected;
+  if (toggle) {
+    toggle.disabled = !connected;
+    toggle.checked = on;
+  }
+  if (stateLine) {
+    if (!connected) stateLine.textContent = "Not connected — desktop bridge required.";
+    else stateLine.textContent = on
+      ? "Take Control: ON — delegated steps need your approval"
+      : "Take Control: OFF";
+  }
+  if (!connected && confirmBox) confirmBox.classList.add("hidden");
 }
 
 window.orvixPushMessages = function (list) {
@@ -848,6 +882,46 @@ $("#stopSpeakingButton").addEventListener("click", () => {
     return;
   }
   toast("Not connected — desktop bridge required.");
+});
+
+// Emergency Stop: the first click only opens the in-page confirm
+// step — an accidental click must not stop anything. Only the
+// confirm button calls the bridge stopAll method, which enqueues
+// the desktop app's _stop_all composition (cancel current task +
+// stop speaking + disarm queued auto-run + cancel the running Brain
+// queue task). The result and the cannot-undo limit are reported
+// back by the app as a SYSTEM message; the button itself claims
+// nothing beyond the request.
+$("#emergencyStopButton").addEventListener("click", () => {
+  if (!connected) { toast("Not connected — desktop bridge required."); return; }
+  $("#emergencyConfirm").classList.remove("hidden");
+});
+$("#emergencyStopCancel").addEventListener("click", () => {
+  $("#emergencyConfirm").classList.add("hidden");
+});
+$("#emergencyStopConfirm").addEventListener("click", () => {
+  $("#emergencyConfirm").classList.add("hidden");
+  if (connected && callBridge("stopAll", [])) {
+    toast("Emergency Stop requested.");
+    return;
+  }
+  toast("Not connected — desktop bridge required.");
+});
+
+// Take Control toggle: a change only SENDS the request through the
+// bridge (setTakeControl enqueues the app-side settings write). The
+// toggle's displayed state is then re-rendered from the last
+// payload — it snaps back to the payload value until the next state
+// push confirms the app's real, persisted flag, so the page can
+// never show a Take Control state the app does not actually have.
+$("#takeControlToggle").addEventListener("change", (event) => {
+  const want = !!event.target.checked;
+  if (connected && callBridge("setTakeControl", [want])) {
+    toast(want ? "Take Control requested: ON" : "Take Control requested: OFF");
+  } else {
+    toast("Not connected — desktop bridge required.");
+  }
+  renderEmergency(lastState);
 });
 
 // Standalone fallback only: browser speech recognition fills the composer.
@@ -1067,6 +1141,7 @@ renderDiagnostics(null);
 renderHomeTasks(null);
 renderActivity(null);
 renderNotifications(null);
+renderEmergency(null);
 renderPerf();
 tryConnect();
 

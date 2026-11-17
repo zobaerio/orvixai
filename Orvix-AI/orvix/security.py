@@ -75,6 +75,16 @@ class AuditLog:
 
 SENSITIVE_CATEGORIES = ("destructive", "financial", "publishing", "account_change")
 
+# Take Control category (Command Center Phase 4): not a sensitivity
+# classification — a step in this category is gated because the user
+# turned Take Control on and wants to approve EVERY delegated
+# desktop step explicitly. The gate treats it exactly like a
+# sensitive category: a confirmer must approve, and with no
+# confirmer the step is refused (fail-closed).
+TAKE_CONTROL_CATEGORY = "take_control"
+
+_CONFIRMATION_REQUIRED_CATEGORIES = SENSITIVE_CATEGORIES + (TAKE_CONTROL_CATEGORY,)
+
 
 class ConfirmationRequired(RuntimeError):
     pass
@@ -85,6 +95,9 @@ class ConfirmationGate:
 
     Default posture is deny: with no confirmer configured, sensitive actions
     are refused (fail-closed), matching the existing app's approval dialogs.
+    The Take Control category (``TAKE_CONTROL_CATEGORY``) is gated the
+    same way: it is how a caller forces approval for a step that is
+    not itself sensitive when the user has taken control.
     """
 
     def __init__(self, confirmer: Optional[Callable[[str, str], bool]] = None, audit: Optional[AuditLog] = None):
@@ -92,7 +105,7 @@ class ConfirmationGate:
         self.audit = audit
 
     def check(self, action: str, category: str) -> bool:
-        if category not in SENSITIVE_CATEGORIES:
+        if category not in _CONFIRMATION_REQUIRED_CATEGORIES:
             return True
         approved = bool(self.confirmer and self.confirmer(action, category))
         if self.audit:

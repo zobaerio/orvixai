@@ -167,6 +167,24 @@
           <div class="performance-chart" id="performanceChart" aria-label="Live performance graph — CPU and RAM samples"></div>
           <div class="performance-labels"><span class="perf-legend"><i class="perf-dot cpu"></i>CPU</span><span id="perfCaption">CPU — · RAM —</span><span class="perf-legend"><i class="perf-dot ram"></i>RAM</span></div>
         </section>
+
+        <section class="panel emergency-panel">
+          <div class="panel-heading"><h2><span class="heading-icon emergency-icon">⛔</span> Emergency</h2><span class="muted">STOP / CONTROL</span></div>
+          <p class="emergency-note">Emergency Stop halts the current task, stops speech, disarms queued commands so they do not auto-run, and cancels a running Brain queue task. A started external action cannot be undone automatically — an already-running network request or desktop action may need to finish first.</p>
+          <button class="emergency-stop-button" id="emergencyStopButton">■ EMERGENCY STOP</button>
+          <div class="emergency-confirm hidden" id="emergencyConfirm">
+            <p>Stop everything now? The current task will be cancelled and queued commands will not auto-run.</p>
+            <div class="emergency-confirm-actions">
+              <button class="emergency-confirm-button" id="emergencyStopConfirm">Yes, stop all</button>
+              <button class="emergency-cancel-button" id="emergencyStopCancel">Cancel</button>
+            </div>
+          </div>
+          <div class="take-control-row">
+            <div class="take-control-copy"><b>Take Control</b><small>Every delegated desktop step asks for your approval before it runs.</small></div>
+            <label class="switch"><input type="checkbox" id="takeControlToggle"><span></span></label>
+          </div>
+          <p class="take-control-state" id="takeControlState">Take Control: —</p>
+        </section>
       </aside>
     </main>
 
