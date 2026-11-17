@@ -195,6 +195,7 @@ function setConnectedUI(isConnected) {
     updateModelPill(lastState);
   }
   updateHeroButtons();
+  updateCommandBar(lastState);
 }
 
 // Hero controls (Command Center Phase 8, audit Bugs #1): the hero
@@ -314,6 +315,35 @@ function updateTypingIndicator(state) {
   const busy = !!(connected && state && state.busy);
   el.classList.toggle("hidden", !busy);
   el.setAttribute("aria-hidden", busy ? "false" : "true");
+}
+
+// ---------------------------------------------------------------------------
+// Persistent command bar (Command Center Phase 9): the ONE composer
+// (mic / input / send) lives in the bottom bar OUTSIDE every view
+// container, so it is visible and functional on every view. Its
+// status line mirrors the same busy/core state as the chat pill —
+// the live core mode while the app is busy, READY when idle, NOT
+// CONNECTED standalone. The bar's Stop control calls the Phase 4
+// stopAll bridge method and is shown/enabled ONLY while the
+// payload says something is actually running (running/busy);
+// otherwise it is hidden and disabled — standalone included, where
+// the not-connected state is the honest presentation.
+// ---------------------------------------------------------------------------
+function updateCommandBar(state) {
+  const status = $("#commandBarStatus");
+  if (status) {
+    if (!connected || !state) status.textContent = "NOT CONNECTED";
+    else if (state.busy) {
+      const core = state.core || {};
+      status.textContent = core.mode ? String(core.mode) : "BUSY";
+    } else status.textContent = "READY";
+  }
+  const stop = $("#commandStopButton");
+  if (stop) {
+    const running = !!(connected && state && (state.running || state.busy));
+    stop.classList.toggle("hidden", !running);
+    stop.disabled = !running;
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -948,6 +978,7 @@ window.orvixPushState = function (state) {
   updateModelPill(state);
   updateChatPill(state);
   updateTypingIndicator(state);
+  updateCommandBar(state);
   updateCoreStatus(state);
   renderTasks();
   renderDiagnostics(state);
@@ -1483,6 +1514,23 @@ $("#stopSpeakingButton").addEventListener("click", () => {
   toast("Not connected — desktop bridge required.");
 });
 
+// Command-bar Stop (Phase 9): wired to the SAME Phase 4 stopAll
+// bridge method as the Emergency panel's confirmed stop — it
+// enqueues the desktop app's _stop_all composition (cancel current
+// task + stop speaking + disarm queued auto-run + cancel the
+// running Brain queue task). The button is only visible while the
+// payload reports something running (see updateCommandBar), so a
+// click here is always a stop of work actually in flight; the
+// result and the cannot-undo limit are reported back by the app as
+// a SYSTEM message, exactly as with the Emergency panel.
+$("#commandStopButton").addEventListener("click", () => {
+  if (connected && callBridge("stopAll", [])) {
+    toast("Stop requested.");
+    return;
+  }
+  toast("Not connected — desktop bridge required.");
+});
+
 // Emergency Stop: the first click only opens the in-page confirm
 // step — an accidental click must not stop anything. Only the
 // confirm button calls the bridge stopAll method, which enqueues
@@ -1738,10 +1786,18 @@ $("#profileButton").addEventListener("click", () => {
 // ---------------------------------------------------------------------------
 // Tasks view: renders the payload's tasks block — real TaskStore
 // records pushed by the bridge (status, command, created/finished
-// times), newest first, read-only. Standalone (no bridge) it shows
-// the same not-connected honesty as the rest of the page instead of
-// inventing tasks; a connected bridge with no history shows the
-// honest empty state.
+// times), newest first. Command Center Phase 9 completes the
+// centre: each row also shows the record's progress bar (Phase 2),
+// its recorded result and its safe-diagnostics summary when the
+// payload carries them, and a Cancel button ONLY on cancellable
+// records (the payload's cancellable flag — queued / running per
+// the record's real status machine). Cancel goes through the
+// bridge cancelTask method, which enqueues the app's existing
+// cancel paths; the row is never updated locally first, so the
+// view cannot show a cancellation the app did not apply.
+// Standalone (no bridge) it shows the same not-connected honesty
+// as the rest of the page instead of inventing tasks; a connected
+// bridge with no history shows the honest empty state.
 // ---------------------------------------------------------------------------
 function renderTasks() {
   const list = $("#tasksList");
@@ -1776,29 +1832,90 @@ function renderTasks() {
     row.append(status, command, times);
     const progress = taskProgressElement(task);
     if (progress) row.appendChild(progress);
+    // Result / diagnostics lines (Phase 9): rendered only when the
+    // payload carries them — the record's own recorded result text
+    // (for a failed task, its recorded failure description) and the
+    // safe-diagnostics counts summary. Neither is ever invented.
+    if (task.result) {
+      const result = document.createElement("span");
+      result.className = "task-result";
+      result.textContent = String(task.result);
+      row.appendChild(result);
+    }
+    if (task.diagnostics) {
+      const diagnostics = document.createElement("span");
+      diagnostics.className = "task-diagnostics";
+      diagnostics.textContent = "Diagnostics: " + String(task.diagnostics);
+      row.appendChild(diagnostics);
+    }
+    // Cancel (Phase 9): only on cancellable records, addressed by
+    // the record id the payload carries. The click is handled by
+    // the delegated listener below — the row itself claims nothing.
+    if (task.cancellable && task.id) {
+      const cancel = document.createElement("button");
+      cancel.type = "button";
+      cancel.className = "task-cancel-button";
+      cancel.textContent = "Cancel";
+      cancel.dataset.taskId = String(task.id);
+      cancel.disabled = !connected;
+      row.appendChild(cancel);
+    }
     list.appendChild(row);
   });
 }
 
+// Tasks view Cancel (Phase 9): one delegated listener for the
+// whole list. The button carries the record id the payload sent;
+// the bridge cancelTask method enqueues the cancellation on the
+// app side (queued -> TaskStore.cancel_queued_task, the running
+// active task -> _cancel_current_task) and the list refreshes from
+// the next payload — a task that already finished is an honest
+// no-op in the app and its row simply loses the button then.
+$("#tasksList").addEventListener("click", (event) => {
+  const target = event.target;
+  const button = target && typeof target.closest === "function"
+    ? target.closest(".task-cancel-button") : null;
+  if (!button) return;
+  const taskId = button.dataset.taskId || "";
+  if (!taskId) { toast("This task cannot be cancelled from here."); return; }
+  if (connected && callBridge("cancelTask", [taskId])) {
+    toast("Task cancel requested.");
+    return;
+  }
+  toast("Not connected — desktop bridge required.");
+});
+
+// Secondary-view cards (Tools / Settings / About). Command Center
+// Phase 9 honesty pass (audit Bugs #2): every card is a REAL entry
+// point — its Open button navigates to the destination that
+// actually exists (a centre view, the Voice panel, the Notification
+// Center, or the desktop console's Settings dialog via the bridge)
+// — and its text describes only what the app actually does. No
+// card may promise a capability the app lacks. A card's target is
+// {tab: "<view>"} for an in-page destination or {action: "..."}
+// for the voice / notifications / settings actions handled by the
+// delegated listener below.
 const tabContent = {
-  tools: {title:"ORVIX Tools", desc:"Quick access to your desktop tools and assistant capabilities.", cards:[
-    ["Voice Assistant","Speech recognition, wake word and text-to-speech controls."],
-    ["File Manager","Search, organize and manage local files (desktop bridge required)."],
-    ["Web Assistant","Open websites and perform browser-based tasks."],
-    ["AI Chat","Connect your local or cloud AI model for conversational responses."],
-    ["System Monitor","Display real CPU, RAM, storage and uptime telemetry."],
-    ["Task Manager","Queue, run, cancel and review desktop automation tasks."]
+  tools: {title:"ORVIX Tools", desc:"Quick access to the centres and panels that exist in this app — every card opens the real thing.", cards:[
+    ["Voice Assistant","Speech recognition, wake word and text-to-speech controls — the Voice Control panel on the Home view.",{action:"voice"}],
+    ["AI Models","The Brain provider registry: configured status, model capabilities and real connection tests.",{tab:"models"}],
+    ["Memory Center","What ORVIX was explicitly asked to remember — search it, delete individual entries, or clear it all.",{tab:"memory"}],
+    ["AI Core","The core state machine, live: current state, current operation, recent activity and pending approvals.",{tab:"core"}],
+    ["Tasks","Recent tasks with progress, recorded results and cancel for queued or running tasks.",{tab:"tasks"}],
+    ["Live Performance","Recorded CPU, RAM, network and disk history, top processes and this app's own usage.",{tab:"performance"}],
+    ["Notifications","The Notification Center: recorded notifications with categories, read state and clear.",{action:"notifications"}],
+    ["Settings","The desktop console's Settings dialog (10 tabs): model endpoint, voice, character, appearance, startup, permissions, notifications and about.",{action:"settings"}]
   ]},
-  settings: {title:"Settings & Connections", desc:"Configure your ORVIX desktop integrations. Values shown here are interface placeholders.", cards:[
-    ["AI Model Endpoint","Connect your local model endpoint and configure model name, API URL and access key."],
-    ["Voice Settings","Choose recognition language, microphone, voice output and wake word."],
-    ["Appearance","Customize theme, animations, density and assistant character."],
-    ["Permissions","Control access to files, applications, browser and system actions."]
+  settings: {title:"Settings & Connections", desc:"ORVIX settings live in the desktop console's Settings dialog (10 tabs). Each card opens that dialog; the card names the tab where the setting lives.", cards:[
+    ["AI Model Endpoint","Endpoint URL, model name, temperature and response limits — Settings > AI Model tab. The access key is stored in Windows Credential Manager via keyring, never in settings.json.",{action:"settings"}],
+    ["Voice Settings","Recognition language, voice, speech rate and volume, and the wake phrase — Settings > Voice tab.",{action:"settings"}],
+    ["Appearance","The animations toggle for this home page — Settings > Appearance tab. Assistant character selection lives on the Home view. ORVIX ships this one dark theme; there is no light theme or density setting.",{action:"settings"}],
+    ["Permissions","A read-only summary of the app's permission posture — Settings > Permissions tab. Sensitive actions still ask for your approval when they run.",{action:"settings"}]
   ]},
-  about: {title:"About ORVIX", desc:"ORVIX is a desktop AI assistant interface designed for voice, commands and productivity.", cards:[
+  about: {title:"About ORVIX", desc:"ORVIX is a local desktop AI assistant for voice, commands and productivity.", cards:[
     ["Version","—"],
-    ["Architecture","Frontend dashboard with optional desktop bridge and AI endpoint."],
-    ["Privacy","Keep credentials in the desktop main process; do not expose API keys in frontend code."]
+    ["Architecture","A local Windows desktop app: a Python/Tkinter console plus this WebView home, connected by an enqueue-only local bridge. Replies come from the configured AI endpoint or the Brain providers."],
+    ["Privacy","Everything is stored locally on this PC — settings, task history and memory live in the app's local data folder. The desktop endpoint's API key is kept in Windows Credential Manager via keyring — never in settings.json, this page or the logs; Brain provider keys come from environment variables only. Audit logs redact secrets, and safe-diagnostics exports carry counts and timings only — no commands, results or provider payloads."]
   ]}
 };
 function showTab(tab) {
@@ -1864,11 +1981,25 @@ function showTab(tab) {
     if (performanceView) performanceView.classList.add("hidden");
     $("#secondaryTitle").textContent = data.title; $("#secondaryDescription").textContent = data.desc;
     $("#secondaryCards").replaceChildren();
-    data.cards.forEach(([title, desc]) => {
+    data.cards.forEach(([title, desc, target]) => {
       const card = document.createElement("article"); card.className = "secondary-card";
       const h = document.createElement("h3"); h.textContent = title;
       const p = document.createElement("p"); p.textContent = desc;
-      card.append(h,p); $("#secondaryCards").append(card);
+      card.append(h,p);
+      // A card with a target gets a real Open button (Phase 9):
+      // the delegated listener below routes it to the existing
+      // view or action the card names. A card without one (About's
+      // informational cards) stays text-only and claims no action.
+      if (target) {
+        const open = document.createElement("button");
+        open.type = "button";
+        open.className = "secondary-card-action";
+        open.textContent = "Open →";
+        if (target.tab) open.dataset.gotoTab = target.tab;
+        if (target.action) open.dataset.gotoAction = target.action;
+        card.appendChild(open);
+      }
+      $("#secondaryCards").append(card);
     });
     if (tab === "about") {
       const version = (window.__orvixState && window.__orvixState.version) || (lastState && lastState.version);
@@ -1910,6 +2041,35 @@ $$(".nav-item").forEach(button => button.addEventListener("click", () => {
   showTab(tab);
 }));
 $$("[data-tab='tools']").forEach(button => button.addEventListener("click", () => showTab("tools")));
+// Secondary-card Open buttons (Phase 9): one delegated listener
+// routes every card to the destination it names — an existing
+// centre view (showTab), the Home Voice panel, the Notification
+// Center (through the bell's own handler), or the desktop
+// console's Settings dialog through the bridge, exactly like the
+// Settings nav item. Standalone, the Settings action says the
+// bridge is required instead of pretending to open anything.
+$("#secondaryCards").addEventListener("click", (event) => {
+  const target = event.target;
+  const button = target && typeof target.closest === "function"
+    ? target.closest(".secondary-card-action") : null;
+  if (!button) return;
+  if (button.dataset.gotoTab) { showTab(button.dataset.gotoTab); return; }
+  const action = button.dataset.gotoAction || "";
+  if (action === "voice") { focusVoicePanel(); return; }
+  if (action === "notifications") {
+    const bell = $("#notificationsButton");
+    if (bell) bell.click();
+    return;
+  }
+  if (action === "settings") {
+    if (connected && bridgeApi && typeof bridgeApi.openConsole === "function") {
+      callBridge("openConsole", []);
+      toast("Settings open in the ORVIX console window.");
+      return;
+    }
+    toast("Not connected — desktop bridge required.");
+  }
+});
 $("#backHome").addEventListener("click", () => showTab("home"));
 $("#coreBackHome").addEventListener("click", () => showTab("home"));
 $("#tasksBackHome").addEventListener("click", () => showTab("home"));

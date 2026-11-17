@@ -17,7 +17,17 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Optional, Sequence
 
+from .task_store import build_safe_diagnostics
+
 DASH = "—"
+
+# Task statuses from which a task can still be cancelled (Command
+# Center Phase 9): a queued record has not started, and the running
+# record is the app's active task. A record already "cancelling"
+# has a cancellation in flight, and the terminal statuses
+# (completed / partial / failed / cancelled) are finished — none of
+# those can be cancelled again.
+CANCELLABLE_TASK_STATUSES = ("queued", "running")
 
 _STATUS_MARKS = {
     "completed": "✓",
@@ -239,6 +249,56 @@ def task_current_step(record: object) -> Optional[str]:
     return None
 
 
+def task_result_summary(record: object) -> Optional[str]:
+    """The record's own result text as a one-line summary, or None.
+
+    This is the same result the Tk Task History detail shows — the
+    app's recorded outcome text for the task (for a failed task it
+    is the failure description the app recorded). It is whitespace-
+    collapsed and clipped like the command text. A record with no
+    result recorded yet yields None: no result is ever invented.
+    """
+    if not isinstance(record, dict):
+        return None
+    text = " ".join(str(record.get("result") or "").split())
+    return _clip(text, 240) if text else None
+
+
+def task_diagnostics_summary(record: object) -> Optional[str]:
+    """Safe-diagnostics summary for one record, or None.
+
+    Built from :func:`orvix.task_store.build_safe_diagnostics` —
+    the aggregate, privacy-safe diagnostics the codebase already
+    computes — so it carries COUNTS ONLY (progress events, tool
+    actions, failed actions): never the command, the result text, a
+    tool payload or a raw provider body. A record with no recorded
+    progress events and no tool actions has nothing to summarise
+    and yields None.
+    """
+    if not isinstance(record, dict):
+        return None
+    try:
+        report = build_safe_diagnostics([record])
+        rows = report.get("tasks") or []
+        summary = rows[0] if rows else {}
+    except Exception:
+        return None
+    if not isinstance(summary, dict):
+        return None
+    progress = summary.get("progress_event_count") or 0
+    actions = summary.get("tool_action_count") or 0
+    counts = summary.get("tool_action_status_counts") or {}
+    failed = counts.get("failed") or 0
+    parts = []
+    if progress:
+        parts.append(f"{progress} progress event" + ("s" if progress != 1 else ""))
+    if actions:
+        parts.append(f"{actions} tool action" + ("s" if actions != 1 else ""))
+    if failed:
+        parts.append(f"{failed} failed")
+    return " · ".join(parts) if parts else None
+
+
 def build_task_entries(records: Optional[Sequence[dict]],
                        limit: int = 10) -> list[dict]:
     """Display-ready entries for a newest-first TaskStore record list.
@@ -251,9 +311,14 @@ def build_task_entries(records: Optional[Sequence[dict]],
     Phase 2 adds ``progress`` (the plan-step fraction from
     :func:`task_progress_fraction`; None when the record has no plan
     steps) and ``currentStep`` (from :func:`task_current_step`; None
-    when the record records no step). Non-dict rows are skipped and
-    the result is bounded to ``limit`` entries; an empty or missing
-    history yields an empty list.
+    when the record records no step). Command Center Phase 9 adds
+    ``id`` (the record's own id, so the web Tasks view can address
+    the record), ``result`` (from :func:`task_result_summary`),
+    ``diagnostics`` (from :func:`task_diagnostics_summary` — safe
+    counts only) and ``cancellable`` (True only for the queued /
+    running statuses in :data:`CANCELLABLE_TASK_STATUSES`). Non-dict
+    rows are skipped and the result is bounded to ``limit`` entries;
+    an empty or missing history yields an empty list.
     """
     if not records:
         return []
@@ -270,6 +335,7 @@ def build_task_entries(records: Optional[Sequence[dict]],
         status = str(row.get("status") or "unknown").strip().lower() or "unknown"
         finished_raw = row.get("finished_at")
         entries.append({
+            "id": str(row.get("id") or ""),
             "status": status,
             "mark": _STATUS_MARKS.get(status, "·"),
             "command": " ".join(str(row.get("command", "")).split()),
@@ -278,6 +344,9 @@ def build_task_entries(records: Optional[Sequence[dict]],
                            if finished_raw else None),
             "progress": task_progress_fraction(row),
             "currentStep": task_current_step(row),
+            "result": task_result_summary(row),
+            "diagnostics": task_diagnostics_summary(row),
+            "cancellable": status in CANCELLABLE_TASK_STATUSES,
         })
     return entries
 

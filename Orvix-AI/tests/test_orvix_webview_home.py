@@ -366,8 +366,10 @@ class PayloadTasksTests(unittest.TestCase):
         self.assertEqual(len(tasks), 2)
         for entry in tasks:
             self.assertEqual(
-                set(entry), {"status", "mark", "command", "createdAt", "finishedAt",
-                             "progress", "currentStep"})
+                set(entry), {"id", "status", "mark", "command", "createdAt", "finishedAt",
+                             "progress", "currentStep",
+                             # Command Center Phase 9 (additive).
+                             "result", "diagnostics", "cancellable"})
             self.assertIsInstance(entry["status"], str)
             self.assertIsInstance(entry["command"], str)
             self.assertIsInstance(entry["createdAt"], str)

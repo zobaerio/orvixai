@@ -3864,6 +3864,88 @@ class OrvixDesktop:
         results[pid] = "reachable" if ok else "unreachable"
         return ok
 
+    # -- Tasks centre (Command Center Phase 9) ----------------------
+
+    def _cancel_task_from_web(self, task_id) -> bool:
+        """Bridge entry point for the web Tasks view Cancel button.
+
+        Runs on the Tk/event thread (the bridge only enqueues it),
+        like every other bridge write. It routes to the SAME cancel
+        paths the desktop UI already uses — never a parallel
+        mechanism:
+
+        * a QUEUED record goes through
+          ``TaskStore.cancel_queued_task`` — the exact call Tk Task
+          History's "Cancel Queued" action makes — and queued
+          auto-run is disarmed when no queued commands remain,
+          mirroring that action;
+        * the RUNNING record, when it is this app's active task,
+          goes through ``_cancel_current_task`` — the console's
+          CANCEL CURRENT TASK path, with its own honest
+          cannot-undo message;
+        * anything else — a finished record, a record already
+          cancelling, a running record that is not the active task,
+          or an unknown id — is an honest no-op.
+
+        Returns True only when a cancellation was actually applied
+        or requested. The web list refreshes from the next state
+        payload, which reflects the store's real state.
+        """
+        store = getattr(self, "task_store", None)
+        if store is None:
+            return False
+        ident = str(task_id or "").strip()
+        if not ident:
+            return False
+        try:
+            record = store.get_task(ident)
+        except Exception:
+            return False
+        if not isinstance(record, dict):
+            return False
+        status = str(record.get("status") or "").strip().lower()
+        if status == "queued":
+            try:
+                cancelled = store.cancel_queued_task(ident)
+            except Exception:
+                return False
+            if cancelled is None:
+                return False
+            try:
+                remaining = store.queued_count()
+            except Exception:
+                remaining = 0
+            if remaining == 0:
+                self._queue_armed = False
+            try:
+                self._write_message(
+                    "SYSTEM",
+                    f"Queued command #{ident} was cancelled before execution.",
+                    "system")
+            except Exception:
+                pass
+            try:
+                self._push_activity(
+                    "Cancelled queued command: "
+                    + str(record.get("command", "")))
+            except Exception:
+                pass
+            refresh = getattr(self, "_refresh_queue_button", None)
+            if callable(refresh):
+                try:
+                    refresh()
+                except Exception:
+                    pass
+            return True
+        if (status == "running"
+                and str(getattr(self, "_active_task_id", "") or "") == ident):
+            try:
+                self._cancel_current_task()
+            except Exception:
+                return False
+            return True
+        return False
+
     def _open_notifications(self) -> None:
         """Tk parity for the Notification Center: a simple window
         over the same persistent store the web bell shows — newest
