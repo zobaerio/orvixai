@@ -12,7 +12,10 @@ from orvix.overlay import (
     clamp_overlay_position, is_click, normalize_overlay_command,
     overlay_window_height, palette_open_geometry, submit_overlay_command,
 )
-from orvix.hud_data import build_hud_panels, build_task_entries, format_task_timestamp
+from orvix.hud_data import (
+    build_hud_panels, build_task_entries, format_task_timestamp,
+    task_current_step, task_progress_fraction,
+)
 
 APP_PATH = Path(__file__).resolve().parents[1] / "app.py"
 
@@ -208,6 +211,16 @@ class TestAppWiring(unittest.TestCase):
         self.assertIn("build_hud_panels(snapshot, app_tasks", self.source)
         self.assertIn("def _refresh_hud_panels", self.source)
 
+    def test_web_home_phase2_accessors_exist(self):
+        # Command Center Phase 2: the app exposes the Control Center
+        # panels and the timestamped activity feed to the web bridge
+        # through small read-only accessors, and _push_activity
+        # maintains the timestamped feed alongside the Tk strings.
+        self.assertIn("def _web_hud_panels", self.source)
+        self.assertIn("def _web_activity_entries", self.source)
+        self.assertIn("self._activity_feed", self.source)
+        self.assertIn('"time": format_message_time(datetime.now())', self.source)
+
     def test_double_click_cancels_palette_toggle(self):
         self.assertIn("def _floating_double_click", self.source)
         self.assertIn("self._cancel_overlay_click()", self.source)
@@ -264,6 +277,82 @@ class TestTaskEntries(unittest.TestCase):
         self.assertEqual(len(entries), 1)
         self.assertEqual(entries[0]["command"], "real")
         self.assertEqual(entries[0]["createdAt"], "—")
+
+
+class TestTaskProgress(unittest.TestCase):
+    """Command Center Phase 2: the plan-step progress fraction and
+    the current-step text on task entries — real record data only."""
+
+    @staticmethod
+    def record(plan=None, steps=None, **extra):
+        row = {"command": "cmd", "status": "running",
+               "created_at": None, "finished_at": None}
+        if plan is not None:
+            row["plan"] = plan
+        if steps is not None:
+            row["steps"] = steps
+        row.update(extra)
+        return row
+
+    def test_no_plan_steps_is_none_not_a_fake_zero(self):
+        self.assertIsNone(task_progress_fraction(self.record()))
+        self.assertIsNone(task_progress_fraction(self.record(plan=[])))
+        self.assertIsNone(task_progress_fraction(self.record(plan="junk")))
+        self.assertIsNone(task_progress_fraction("not a record"))
+        self.assertIsNone(task_progress_fraction(None))
+
+    def test_plan_with_no_completed_steps_is_zero(self):
+        plan = [{"title": "a", "status": "pending"},
+                {"title": "b", "status": "running"}]
+        self.assertEqual(task_progress_fraction(self.record(plan=plan)), 0.0)
+
+    def test_partial_progress_fraction(self):
+        plan = [{"title": "a", "status": "completed"},
+                {"title": "b", "status": "COMPLETED"},
+                {"title": "c", "status": "running"},
+                {"title": "d", "status": "pending"}]
+        self.assertEqual(task_progress_fraction(self.record(plan=plan)), 0.5)
+
+    def test_complete_progress_fraction(self):
+        plan = [{"title": "a", "status": "completed"},
+                {"title": "b", "status": "completed"}]
+        self.assertEqual(task_progress_fraction(self.record(plan=plan)), 1.0)
+
+    def test_non_dict_plan_rows_do_not_count(self):
+        plan = [{"title": "a", "status": "completed"}, "junk", None]
+        self.assertEqual(task_progress_fraction(self.record(plan=plan)), 1.0)
+
+    def test_current_step_prefers_running_plan_title(self):
+        plan = [{"title": "done", "status": "completed"},
+                {"title": "  Write   summary ", "status": "running"}]
+        row = self.record(plan=plan,
+                          steps=[{"time": "t", "text": "older event"}])
+        self.assertEqual(task_current_step(row), "Write summary")
+
+    def test_current_step_falls_back_to_latest_progress_event(self):
+        row = self.record(steps=[{"time": "t1", "text": "first"},
+                                 {"time": "t2", "text": "latest event"}])
+        self.assertEqual(task_current_step(row), "latest event")
+
+    def test_current_step_none_when_record_has_no_steps(self):
+        self.assertIsNone(task_current_step(self.record()))
+        self.assertIsNone(task_current_step(self.record(plan=[], steps=[])))
+        self.assertIsNone(task_current_step(None))
+
+    def test_entries_carry_progress_and_current_step(self):
+        records = [
+            self.record(
+                plan=[{"title": "a", "status": "completed"},
+                      {"title": "b", "status": "running"}],
+                command="planned job", status="running"),
+            self.record(command="simple job", status="completed"),
+        ]
+        first, second = build_task_entries(records)
+        self.assertEqual(first["progress"], 0.5)
+        self.assertEqual(first["currentStep"], "b")
+        # No plan steps -> progress stays None (status only, no %).
+        self.assertIsNone(second["progress"])
+        self.assertIsNone(second["currentStep"])
 
 
 if __name__ == "__main__":

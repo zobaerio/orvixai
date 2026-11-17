@@ -360,7 +360,8 @@ class PayloadTasksTests(unittest.TestCase):
         self.assertEqual(len(tasks), 2)
         for entry in tasks:
             self.assertEqual(
-                set(entry), {"status", "mark", "command", "createdAt", "finishedAt"})
+                set(entry), {"status", "mark", "command", "createdAt", "finishedAt",
+                             "progress", "currentStep"})
             self.assertIsInstance(entry["status"], str)
             self.assertIsInstance(entry["command"], str)
             self.assertIsInstance(entry["createdAt"], str)
@@ -411,6 +412,175 @@ class PayloadTasksTests(unittest.TestCase):
         self.app.task_store = BrokenStore()
         payload = build_state_payload(self.app, stats=self.stats)
         self.assertEqual(payload["tasks"], [])
+
+
+def fake_snapshot(**overrides):
+    snap = {
+        "agents": [{"name": "Chief"}, {"name": "Coding"}],
+        "models": [
+            {"provider": "openai", "configured": True, "healthy": True},
+            {"provider": "gemini", "configured": False, "healthy": None},
+        ],
+        "tasks": {"pending": 1, "running": 0, "completed": 4, "failed": 1},
+        "recent_tasks": [{"id": "abcdef12", "title": "bg job",
+                          "status": "completed", "attempts": 1}],
+        "budget": {"limit_usd": 5.0, "spent_usd": 1.25, "calls": 7,
+                   "remaining_usd": 3.75},
+        "audit_tail": [{"at": 1.0, "event": "task_started", "actor": "chief"}],
+    }
+    snap.update(overrides)
+    return snap
+
+
+class PayloadPhase2Tests(unittest.TestCase):
+    """Command Center Phase 2: the payload gains the Control Center
+    diagnostics block, the recent-activity block and the current
+    operation — all from capabilities the app object actually
+    exposes, absent/honest-empty when it does not."""
+
+    def setUp(self):
+        self.app = FakeApp()
+        self.stats = SystemStats(None, None, None, "—", "—", "—", None)
+
+    def payload(self):
+        result = build_state_payload(self.app, stats=self.stats)
+        json.dumps(result)  # every Phase 2 block stays JSON-serializable
+        return result
+
+    def test_blocks_absent_for_minimal_app(self):
+        payload = self.payload()
+        self.assertIsNone(payload["controlCenter"])
+        self.assertEqual(payload["activity"], [])
+        self.assertIsNone(payload["currentOperation"])
+
+    def test_control_center_from_snapshot_accessor(self):
+        self.app._hud_control_center_snapshot = lambda: fake_snapshot()
+        payload = self.payload()
+        block = payload["controlCenter"]
+        self.assertIsNotNone(block)
+        self.assertEqual(block["agents"], "AGENTS  2 REGISTERED")
+        self.assertEqual(block["models"], "PROVIDERS  1/2 CONFIGURED")
+        self.assertEqual(block["health"], "PROVIDER HEALTH  1/1 UP")
+        self.assertEqual(block["queue"],
+                         "TASKS  1 QUEUED · 0 RUNNING · 4 DONE · 1 FAILED")
+        self.assertEqual(block["budget"], "BUDGET  $1.25 SPENT / $5.00 CAP · 7 CALLS")
+        self.assertEqual(block["memory"], "MEMORY  —")
+        self.assertEqual(block["recentTasks"], ["✓ bg job"])
+        self.assertEqual(block["logLines"], ["task_started · chief"])
+
+    def test_control_center_from_panels_accessor(self):
+        from orvix.hud_data import build_hud_panels
+        self.app._web_hud_panels = lambda: build_hud_panels(
+            fake_snapshot(), None, memory_count=3, lesson_count=9)
+        payload = self.payload()
+        block = payload["controlCenter"]
+        self.assertIsNotNone(block)
+        self.assertEqual(block["agents"], "AGENTS  2 REGISTERED")
+        self.assertEqual(block["memory"], "MEMORY  3 ITEMS · 9 LESSONS")
+
+    def test_control_center_snapshot_none_keeps_real_task_counts(self):
+        # The capability exists but the snapshot could not be built:
+        # the Tk HUD still shows the app-task counts and dashes for
+        # the rest — the web block mirrors that exactly.
+        self.app._hud_control_center_snapshot = lambda: None
+        self.app.task_store = FakeTaskStore([
+            {"id": "a1", "command": "Open Chrome", "status": "completed",
+             "created_at": "2026-11-16T05:30:45+06:00", "finished_at": None},
+        ])
+        payload = self.payload()
+        block = payload["controlCenter"]
+        self.assertIsNotNone(block)
+        self.assertIn("—", block["agents"])
+        self.assertEqual(block["queue"],
+                         "TASKS  0 QUEUED · 0 RUNNING · 1 DONE · 0 FAILED")
+
+    def test_control_center_broken_snapshot_never_raises(self):
+        def boom():
+            raise RuntimeError("snapshot unavailable")
+        self.app._hud_control_center_snapshot = boom
+        payload = self.payload()
+        self.assertIsNotNone(payload["controlCenter"])
+        self.assertIn("—", payload["controlCenter"]["agents"])
+
+    def test_activity_from_legacy_string_feed(self):
+        self.app.recent_activity = [
+            "Working on: Open Chrome",
+            "Queued: YouTube kholo",
+            "Waiting for your first command",
+        ]
+        payload = self.payload()
+        # Newest-first order preserved, placeholder skipped, and no
+        # timestamp is invented for the legacy string feed.
+        self.assertEqual(payload["activity"], [
+            {"text": "Working on: Open Chrome", "time": None},
+            {"text": "Queued: YouTube kholo", "time": None},
+        ])
+
+    def test_activity_from_timestamped_accessor_keeps_times(self):
+        self.app._web_activity_entries = lambda: [
+            {"text": "Task queue complete", "time": "09:41"},
+            {"text": "Working on: Open Chrome", "time": "09:40"},
+        ]
+        payload = self.payload()
+        self.assertEqual(payload["activity"], [
+            {"text": "Task queue complete", "time": "09:41"},
+            {"text": "Working on: Open Chrome", "time": "09:40"},
+        ])
+
+    def test_activity_truncated_to_ten(self):
+        self.app._web_activity_entries = lambda: [
+            {"text": f"event {i}", "time": "09:41"} for i in range(15)
+        ]
+        payload = self.payload()
+        self.assertEqual(len(payload["activity"]), 10)
+        self.assertEqual(payload["activity"][0]["text"], "event 0")
+        self.assertEqual(payload["activity"][-1]["text"], "event 9")
+
+    def test_activity_broken_accessor_yields_empty(self):
+        def boom():
+            raise RuntimeError("feed unavailable")
+        self.app._web_activity_entries = boom
+        payload = self.payload()
+        self.assertEqual(payload["activity"], [])
+
+    def test_current_operation_uses_running_plan_step(self):
+        self.app.task_store = FakeTaskStore([
+            {"id": "a1", "command": "Build the report", "status": "running",
+             "created_at": "2026-11-16T05:30:45+06:00", "finished_at": None,
+             "plan": [{"title": "Gather data", "status": "completed"},
+                      {"title": "Write summary", "status": "running"},
+                      {"title": "Send", "status": "pending"}],
+             "steps": [], "actions": []},
+        ])
+        payload = self.payload()
+        self.assertEqual(payload["currentOperation"], {
+            "text": "Write summary", "status": "running",
+            "command": "Build the report"})
+        # The same record's task entry carries the plan progress.
+        self.assertAlmostEqual(payload["tasks"][0]["progress"], 1 / 3)
+        self.assertEqual(payload["tasks"][0]["currentStep"], "Write summary")
+
+    def test_current_operation_falls_back_to_latest_progress_event(self):
+        self.app.task_store = FakeTaskStore([
+            {"id": "a1", "command": "Open Chrome", "status": "running",
+             "created_at": "2026-11-16T05:30:45+06:00", "finished_at": None,
+             "steps": [{"time": "t1", "text": "Launching browser"}],
+             "actions": []},
+        ])
+        payload = self.payload()
+        self.assertEqual(payload["currentOperation"]["text"], "Launching browser")
+
+    def test_current_operation_none_when_nothing_running(self):
+        self.app.task_store = FakeTaskStore([
+            {"id": "a1", "command": "Open Chrome", "status": "completed",
+             "created_at": "2026-11-16T05:30:45+06:00",
+             "finished_at": "2026-11-16T05:31:05+06:00",
+             "steps": [], "actions": []},
+        ])
+        payload = self.payload()
+        self.assertIsNone(payload["currentOperation"])
+        # A completed task without a plan has no progress fraction.
+        self.assertIsNone(payload["tasks"][0]["progress"])
 
 
 class PayloadEndpointStateTests(unittest.TestCase):
@@ -836,6 +1006,49 @@ class StaticWebHomeTests(unittest.TestCase):
         self.assertIn(".system-details", self.style_css)
         self.assertIn(".detail-row", self.style_css)
         self.assertIn(".drive-row", self.style_css)
+
+    def test_phase2_home_density_panels(self):
+        # Command Center Phase 2: centre Diagnostics list, right-
+        # column Active Tasks with progress bars, a Current
+        # Operation line and a Recent Activity panel — all rendered
+        # from the Phase 2 payload blocks, with honest empty states
+        # in the markup itself.
+        for element_id in ("diagnosticsList", "diagnosticsEmpty",
+                           "homeTasksList", "homeTasksEmpty",
+                           "currentOperation",
+                           "activityList", "activityEmpty"):
+            self.assertIn(f'id="{element_id}"', self.index_html)
+        self.assertIn("Diagnostics", self.index_html)
+        self.assertIn("Active Tasks", self.index_html)
+        self.assertIn("Recent Activity", self.index_html)
+        self.assertIn("Current Operation", self.index_html)
+        self.assertIn("No diagnostics available", self.index_html)
+        self.assertIn("No active tasks", self.index_html)
+        self.assertIn("No recent activity", self.index_html)
+        self.assertIn("Idle — no task running", self.index_html)
+        self.assertIn("renderDiagnostics", self.app_js)
+        self.assertIn("renderHomeTasks", self.app_js)
+        self.assertIn("renderActivity", self.app_js)
+        self.assertIn("renderDiagnostics(state)", self.app_js)
+        self.assertIn("renderHomeTasks(state)", self.app_js)
+        self.assertIn("renderActivity(state)", self.app_js)
+        self.assertIn("state.controlCenter", self.app_js)
+        self.assertIn("state.activity", self.app_js)
+        self.assertIn("state.currentOperation", self.app_js)
+        self.assertIn("No recent activity", self.app_js)
+        # Progress bars are driven by the payload's real fraction:
+        # the renderer reads task.progress and never invents a %.
+        self.assertIn("taskProgressPercent", self.app_js)
+        self.assertIn("taskProgressElement", self.app_js)
+        self.assertIn("task.progress", self.app_js)
+        self.assertIn(".diagnostic-row", self.style_css)
+        self.assertIn(".diagnostics-list", self.style_css)
+        self.assertIn(".home-task-row", self.style_css)
+        self.assertIn(".task-progress", self.style_css)
+        self.assertIn(".task-progress-fill", self.style_css)
+        self.assertIn(".current-operation", self.style_css)
+        self.assertIn(".activity-row", self.style_css)
+        self.assertIn(".activity-list", self.style_css)
 
     def test_responsive_breakpoints_rearrange_layout(self):
         # Phase 11 (§9): dedicated breakpoints rearrange the rails —

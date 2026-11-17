@@ -424,6 +424,153 @@ function updateSystemDetails(stats) {
 }
 
 // ---------------------------------------------------------------------------
+// Command Center Phase 2 panels: diagnostics (centre), active tasks
+// with progress + the current operation line, and recent activity
+// (right column). Every value comes from the payload blocks the
+// bridge builds from real app state (controlCenter / tasks /
+// activity / currentOperation). An absent or empty block renders
+// the panel's honest empty state; standalone (no bridge) the panels
+// say the bridge is required instead of inventing operations,
+// activity or diagnostics.
+// ---------------------------------------------------------------------------
+function taskProgressPercent(task) {
+  const value = task && task.progress;
+  if (typeof value !== "number" || !isFinite(value)) return null;
+  return Math.max(0, Math.min(100, Math.round(value * 100)));
+}
+function taskProgressElement(task) {
+  const percent = taskProgressPercent(task);
+  if (percent == null) return null;
+  const cell = document.createElement("span");
+  cell.className = "task-progress-cell";
+  const track = document.createElement("span");
+  track.className = "task-progress";
+  const fill = document.createElement("i");
+  fill.className = "task-progress-fill";
+  fill.style.width = percent + "%";
+  track.appendChild(fill);
+  const label = document.createElement("b");
+  label.className = "task-progress-label";
+  label.textContent = percent + "%";
+  cell.append(track, label);
+  return cell;
+}
+function renderDiagnostics(state) {
+  const list = $("#diagnosticsList");
+  const empty = $("#diagnosticsEmpty");
+  const logWrap = $("#diagnosticsLogWrap");
+  const log = $("#diagnosticsLog");
+  if (!list || !empty) return;
+  list.replaceChildren();
+  if (log) log.replaceChildren();
+  if (logWrap) logWrap.classList.add("hidden");
+  const cc = connected && state && state.controlCenter ? state.controlCenter : null;
+  if (!cc) {
+    empty.textContent = connected
+      ? "No diagnostics available"
+      : "Not connected — desktop bridge required.";
+    empty.classList.remove("hidden");
+    return;
+  }
+  empty.classList.add("hidden");
+  ["agents", "models", "health", "queue", "budget", "memory"].forEach((key) => {
+    const line = cc[key];
+    if (!line) return;
+    const row = document.createElement("div");
+    row.className = "diagnostic-row";
+    row.textContent = String(line);
+    list.appendChild(row);
+  });
+  const logLines = Array.isArray(cc.logLines) ? cc.logLines : [];
+  if (log && logWrap && logLines.length) {
+    logLines.forEach((line) => {
+      const row = document.createElement("div");
+      row.className = "diagnostic-log-row";
+      row.textContent = String(line);
+      log.appendChild(row);
+    });
+    logWrap.classList.remove("hidden");
+  }
+}
+const ACTIVE_TASK_STATUSES = ["running", "queued", "cancelling", "pending", "paused"];
+function renderHomeTasks(state) {
+  const operation = $("#currentOperation");
+  if (operation) {
+    const current = connected && state && state.currentOperation
+      ? state.currentOperation : null;
+    operation.textContent = current && current.text
+      ? String(current.text)
+      : "Idle — no task running";
+  }
+  const list = $("#homeTasksList");
+  const empty = $("#homeTasksEmpty");
+  if (!list || !empty) return;
+  list.replaceChildren();
+  const tasks = connected && state && Array.isArray(state.tasks) ? state.tasks : [];
+  const active = tasks.filter(
+    (task) => task && ACTIVE_TASK_STATUSES.indexOf(String(task.status || "").toLowerCase()) !== -1);
+  if (!active.length) {
+    empty.textContent = connected
+      ? "No active tasks"
+      : "Not connected — desktop bridge required.";
+    empty.classList.remove("hidden");
+    return;
+  }
+  empty.classList.add("hidden");
+  active.forEach((task) => {
+    const row = document.createElement("article");
+    row.className = "home-task-row";
+    const head = document.createElement("div");
+    head.className = "home-task-head";
+    const status = document.createElement("span");
+    status.className = "task-status";
+    status.textContent = (task.mark ? task.mark + " " : "") + String(task.status || "unknown").toUpperCase();
+    const command = document.createElement("span");
+    command.className = "task-command";
+    command.textContent = task.command || "";
+    head.append(status, command);
+    row.appendChild(head);
+    // Progress bar only when the payload carries a real fraction
+    // (the task has plan steps); a task without steps shows its
+    // status only — no fake percentage is ever rendered.
+    const progress = taskProgressElement(task);
+    if (progress) row.appendChild(progress);
+    list.appendChild(row);
+  });
+}
+function renderActivity(state) {
+  const list = $("#activityList");
+  const empty = $("#activityEmpty");
+  if (!list || !empty) return;
+  list.replaceChildren();
+  const entries = connected && state && Array.isArray(state.activity) ? state.activity : [];
+  if (!entries.length) {
+    empty.textContent = connected
+      ? "No recent activity"
+      : "Not connected — desktop bridge required.";
+    empty.classList.remove("hidden");
+    return;
+  }
+  empty.classList.add("hidden");
+  entries.forEach((entry) => {
+    if (!entry || !entry.text) return;
+    const row = document.createElement("div");
+    row.className = "activity-row";
+    const text = document.createElement("span");
+    text.className = "activity-text";
+    text.textContent = String(entry.text);
+    row.appendChild(text);
+    if (entry.time) {
+      const time = document.createElement("span");
+      time.className = "activity-time";
+      time.textContent = String(entry.time);
+      row.appendChild(time);
+    }
+    list.appendChild(row);
+  });
+}
+
+// ---------------------------------------------------------------------------
 // Python -> JS pushes. State shape (all fields may be missing/null):
 // { version, stats:{cpu, ram, storage, osName, machine, uptime},
 //   model:{name, endpoint, statusLines:[{label, value, state}]},
@@ -489,6 +636,9 @@ window.orvixPushState = function (state) {
   updateTypingIndicator(state);
   updateCoreStatus(state);
   renderTasks();
+  renderDiagnostics(state);
+  renderHomeTasks(state);
+  renderActivity(state);
 
   if (state.character) {
     const key = String(state.character).toUpperCase();
@@ -744,6 +894,8 @@ function renderTasks() {
     times.className = "task-times";
     times.textContent = "Started " + (task.createdAt || "—") + " · Finished " + (task.finishedAt || "Not finished");
     row.append(status, command, times);
+    const progress = taskProgressElement(task);
+    if (progress) row.appendChild(progress);
     list.appendChild(row);
   });
 }
@@ -841,6 +993,9 @@ updateTypingIndicator(null);
 updateCoreStatus(null);
 updateSystemDetails(null);
 renderTasks();
+renderDiagnostics(null);
+renderHomeTasks(null);
+renderActivity(null);
 renderPerf();
 tryConnect();
 
