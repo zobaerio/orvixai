@@ -45,6 +45,18 @@
             <div class="meter"><div class="ring ring-blue" data-stat="storage" style="--value:0"><span>—</span></div><small>STORAGE</small></div>
           </div>
           <div class="windows-info"><div class="windows-logo">▦</div><div><b>Windows Info</b><small id="osInfo">—</small></div><span class="uptime">◷ <small>Uptime<br><b id="uptimeValue">—</b></small></span></div>
+          <div class="system-details" id="systemDetails">
+            <div class="detail-row"><span>Network</span><b><span id="networkDown">N/A</span> ↓ · <span id="networkUp">N/A</span> ↑</b></div>
+            <div class="detail-row"><span>Disk activity</span><b>R <span id="diskRead">N/A</span> · W <span id="diskWrite">N/A</span></b></div>
+            <div class="detail-row"><span>Battery</span><b id="batteryValue">N/A</b></div>
+            <div class="detail-row"><span>GPU</span><b id="gpuValue">N/A</b></div>
+            <div class="detail-row"><span>Temperature</span><b id="temperatureValue">N/A</b></div>
+            <div class="detail-row"><span>ORVIX App</span><b id="ownProcessValue">N/A</b></div>
+          </div>
+          <div class="drive-block">
+            <div class="drive-heading">Drives</div>
+            <div class="drive-list" id="driveList"><p class="drive-empty">N/A</p></div>
+          </div>
         </section>
 
         <section class="panel character-panel">

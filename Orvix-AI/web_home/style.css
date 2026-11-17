@@ -304,3 +304,22 @@ body::after{background:radial-gradient(620px 380px at 16% -6%,rgba(0,140,255,.17
    every animation and transition on the page stops. The canvas FX
    loop honours the same preference in app.js (fxMotionBlocked). */
 @media (prefers-reduced-motion: reduce){*,*::before,*::after{animation:none!important;transition:none!important}}
+
+/* ==========================================================================
+   Command Center Phase 1 — System Overview detail rows: network and
+   disk-activity rates, battery, GPU / temperature (honest "N/A" on
+   this stack), this app's own usage, and the per-drive usage list.
+   Values are rendered by app.js from the bridge payload only.
+   ========================================================================== */
+.system-details{margin:10px 14px 0;border:1px solid #086a9b;border-radius:12px;background:#06213b;padding:6px 12px}
+.detail-row{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:6px 0;border-bottom:1px solid #0d3555;font-size:11px}
+.detail-row:last-child{border-bottom:none}
+.detail-row span{color:#a9c9e5;font-weight:700}
+.detail-row b{color:var(--cyan);font-weight:800;text-align:right}
+.drive-block{margin:10px 14px 0}
+.drive-heading{font-size:10px;color:#7295b4;font-weight:800;letter-spacing:1px;margin-bottom:6px}
+.drive-list{display:flex;flex-direction:column;gap:6px}
+.drive-row{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:7px 12px;border:1px solid #0d4a6e;border-radius:10px;background:#06213b;font-size:11px}
+.drive-row span{color:#b7cee3;font-weight:700;overflow-wrap:anywhere}
+.drive-row b{color:var(--cyan);font-weight:800}
+.drive-empty{font-size:11px;color:var(--muted);margin:2px 0}
