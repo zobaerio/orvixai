@@ -92,6 +92,12 @@ class FakeApp:
     def _clear_conversation_from_web(self):
         self.calls.append(("_clear_conversation_from_web",))
 
+    def _mark_notifications_read_from_web(self):
+        self.calls.append(("_mark_notifications_read_from_web",))
+
+    def _clear_notifications_from_web(self):
+        self.calls.append(("_clear_notifications_from_web",))
+
 
 def drain(app):
     """Execute every queued (callback, args) pair, Tk-thread style."""
@@ -809,14 +815,16 @@ class StaticWebHomeTests(unittest.TestCase):
         self.assertIn("openConsole", self.app_js)
 
     def test_notifications_panel_collects_system_messages(self):
-        # The bell toggles a real panel fed by the SYSTEM messages the
-        # bridge pushes; the old canned toast must be gone.
+        # Superseded by Command Center Phase 3: the bell panel is now
+        # the Notification Center, rendered from the payload's
+        # notifications block — chat SYSTEM messages no longer feed
+        # it (see the Phase 3 static tests below). The panel/list ids
+        # and the honest empty wording survive from this Phase 1 test.
         self.assertIn('id="notificationsPanel"', self.index_html)
         self.assertIn('id="notificationsList"', self.index_html)
         self.assertIn("No notifications yet.", self.index_html)
         self.assertIn("notificationsPanel", self.app_js)
         self.assertIn("renderNotifications", self.app_js)
-        self.assertIn("isSystemMessage", self.app_js)
         self.assertNotIn('toast("No new notifications.")', self.app_js)
 
     def test_tasks_nav_and_view_present(self):
@@ -1134,6 +1142,193 @@ class CharacterPortraitTests(unittest.TestCase):
             result = api.getCharacterPortraits()
         self.assertFalse(result["ok"])
         self.assertEqual(result["error"], "RuntimeError")
+
+
+# ---------------------------------------------------------------------------
+# Command Center Phase 3 — Notification Center payload + bridge
+# ---------------------------------------------------------------------------
+
+from orvix.notify import NotificationStore  # noqa: E402
+
+
+class PayloadPhase3Tests(unittest.TestCase):
+    """The payload gains a notifications block built from the app's
+    persistent NotificationStore: bounded latest records with
+    category/title/text/timestamp/read, plus the total unread
+    count. No store -> the block is None (absent), never an error
+    and never invented items."""
+
+    def setUp(self):
+        self.app = FakeApp()
+        self.stats = SystemStats(None, None, None, "—", "—", "—", None)
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.store = NotificationStore(
+            Path(self.temp.name) / "notifications.json")
+
+    def payload(self):
+        result = build_state_payload(self.app, stats=self.stats)
+        json.dumps(result)  # the Phase 3 block stays JSON-serializable
+        return result
+
+    def test_block_absent_when_app_has_no_store(self):
+        self.assertIsNone(self.payload()["notifications"])
+
+    def test_block_empty_for_empty_store(self):
+        self.app.notification_store = self.store
+        self.assertEqual(self.payload()["notifications"],
+                         {"items": [], "unreadCount": 0})
+
+    def test_block_shape_and_fields(self):
+        self.store.add_event("task_completed", detail="Open Notepad")
+        self.store.add_event("wake_activation", detail="hey orvix")
+        self.app.notification_store = self.store
+        block = self.payload()["notifications"]
+        self.assertEqual(block["unreadCount"], 2)
+        self.assertEqual(len(block["items"]), 2)
+        # Newest first: the wake event was recorded last.
+        newest, oldest = block["items"]
+        self.assertEqual(newest["category"], "voice")
+        self.assertEqual(newest["title"], "ORVIX — Listening")
+        self.assertEqual(newest["text"], "hey orvix")
+        self.assertFalse(newest["read"])
+        self.assertIsInstance(newest["timestamp"], float)
+        # The HH:MM time is formatted from the real timestamp.
+        self.assertRegex(newest["time"], r"^\d{2}:\d{2}$")
+        self.assertTrue(newest["id"])
+        self.assertEqual(oldest["category"], "task")
+        self.assertEqual(oldest["text"], "Open Notepad")
+
+    def test_block_reflects_read_state_and_unread_count(self):
+        self.store.add_event("task_failed", detail="boom")
+        self.store.add_event("task_completed", detail="done")
+        self.store.mark_all_read()
+        self.store.add_event("endpoint_health", detail="reachable")
+        self.app.notification_store = self.store
+        block = self.payload()["notifications"]
+        self.assertEqual(block["unreadCount"], 1)
+        self.assertFalse(block["items"][0]["read"])
+        self.assertTrue(block["items"][1]["read"])
+        self.assertEqual(block["items"][0]["category"], "connection")
+
+    def test_block_bounded_to_latest_twenty(self):
+        for index in range(25):
+            self.store.add("system", f"Title {index}", "text",
+                           timestamp=float(index))
+        self.app.notification_store = self.store
+        block = self.payload()["notifications"]
+        self.assertEqual(len(block["items"]),
+                         webview_home.MAX_PAYLOAD_NOTIFICATIONS)
+        self.assertEqual(block["items"][0]["title"], "Title 24")
+        # The unread count is the store total, not the page size.
+        self.assertEqual(block["unreadCount"], 25)
+
+    def test_broken_store_yields_absent_block_not_exception(self):
+        class BrokenStore:
+            def list(self, limit=None):
+                raise RuntimeError("store unavailable")
+
+        self.app.notification_store = BrokenStore()
+        self.assertIsNone(self.payload()["notifications"])
+
+    def test_store_without_list_api_yields_absent_block(self):
+        self.app.notification_store = object()
+        self.assertIsNone(self.payload()["notifications"])
+
+
+class ApiPhase3Tests(unittest.TestCase):
+    """markNotificationsRead / clearNotifications are writes, so
+    they follow the bridge's enqueue discipline exactly: nothing
+    happens until the app's event queue is drained."""
+
+    def setUp(self):
+        self.app = FakeApp()
+        self.api = OrvixWebHomeApi(self.app)
+
+    def test_mark_read_enqueues_app_handler(self):
+        self.assertEqual(self.api.markNotificationsRead(), {"ok": True})
+        self.assertEqual(self.app.calls, [])  # nothing before the drain
+        drain(self.app)
+        self.assertEqual(self.app.calls,
+                         [("_mark_notifications_read_from_web",)])
+
+    def test_clear_enqueues_app_handler(self):
+        self.assertEqual(self.api.clearNotifications(), {"ok": True})
+        self.assertEqual(self.app.calls, [])
+        drain(self.app)
+        self.assertEqual(self.app.calls,
+                         [("_clear_notifications_from_web",)])
+
+    def test_missing_app_handler_reports_not_ok(self):
+        class MinimalApp:
+            events = queue.Queue()
+
+        api = OrvixWebHomeApi(MinimalApp())
+        self.assertFalse(api.markNotificationsRead()["ok"])
+        self.assertFalse(api.clearNotifications()["ok"])
+
+    def test_enqueued_handlers_actually_update_the_store(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = NotificationStore(Path(tmp) / "notifications.json")
+            store.add_event("task_completed", detail="done")
+            app = FakeApp()
+            app.notification_store = store
+            app._mark_notifications_read_from_web = store.mark_all_read
+            app._clear_notifications_from_web = store.clear
+            api = OrvixWebHomeApi(app)
+            self.assertEqual(api.markNotificationsRead(), {"ok": True})
+            self.assertEqual(store.unread_count(), 1)  # not yet drained
+            drain(app)
+            self.assertEqual(store.unread_count(), 0)
+            store.add_event("task_failed", detail="boom")
+            self.assertEqual(api.clearNotifications(), {"ok": True})
+            drain(app)
+            self.assertEqual(store.list(), [])
+
+
+@unittest.skipIf(
+    not WEB_HOME_DIR.is_dir()
+    or any(not (WEB_HOME_DIR / name).is_file() for name in _WEB_HOME_FILES),
+    "web_home/ not fully created yet (delivered separately)")
+class StaticPhase3Tests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.index_html = (WEB_HOME_DIR / "index.html").read_text(encoding="utf-8")
+        cls.app_js = (WEB_HOME_DIR / "app.js").read_text(encoding="utf-8")
+        cls.style_css = (WEB_HOME_DIR / "style.css").read_text(encoding="utf-8")
+
+    def test_bell_badge_and_centre_controls_exist(self):
+        self.assertIn('id="notificationBadge"', self.index_html)
+        self.assertIn('id="notificationsMarkRead"', self.index_html)
+        self.assertIn('id="notificationsClear"', self.index_html)
+        self.assertIn("Notification Center", self.index_html)
+        self.assertIn(".notification-badge", self.style_css)
+        self.assertIn(".notification-item.unread", self.style_css)
+        self.assertIn(".notification-category", self.style_css)
+
+    def test_panel_renders_from_payload_block_only(self):
+        # Bugs #3 fix: rendering is driven by the payload block on
+        # every state push, and the page keeps no collection of its
+        # own — the old unbounded accumulation patterns are gone.
+        self.assertIn("state.notifications", self.app_js)
+        self.assertIn("renderNotifications(state)", self.app_js)
+        self.assertIn("unreadCount", self.app_js)
+        self.assertIn("updateNotificationBadge", self.app_js)
+        self.assertNotIn("const notifications = []", self.app_js)
+        self.assertNotIn("notifications.push", self.app_js)
+        self.assertNotIn("isSystemMessage", self.app_js)
+
+    def test_mark_and_clear_route_through_bridge_with_confirm(self):
+        self.assertIn("markNotificationsRead", self.app_js)
+        self.assertIn("clearNotifications", self.app_js)
+        self.assertIn("Clear all notifications?", self.app_js)
+        self.assertIn(
+            "Task history and settings are NOT deleted.", self.app_js)
+
+    def test_standalone_empty_state_is_honest(self):
+        self.assertIn(
+            "Not connected — desktop bridge required.", self.app_js)
+        self.assertIn("renderNotifications(null)", self.app_js)
 
 
 if __name__ == "__main__":

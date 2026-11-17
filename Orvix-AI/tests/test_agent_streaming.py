@@ -321,8 +321,14 @@ class StreamingWiringStaticTests(unittest.TestCase):
         self.assertIn("streamNodes", APP_JS)
         self.assertIn("dataset.streamId", APP_JS)
         self.assertIn("m.final", APP_JS)
-        # Partials never join the notifications collection.
-        self.assertIn("m.final !== false", APP_JS)
+        # Partials never join a notifications collection — since
+        # Command Center Phase 3 (Bugs #3 fix) chat messages feed no
+        # collection at all: the Notification Center renders only
+        # from the payload's notifications block, so the old
+        # "m.final !== false" accumulation guard is gone with the
+        # array it guarded.
+        self.assertNotIn("notifications.push", APP_JS)
+        self.assertNotIn("const notifications = []", APP_JS)
         # Copy reads the node's current (final) text at click time.
         self.assertIn("copyMessageText(p.textContent)", APP_JS)
 

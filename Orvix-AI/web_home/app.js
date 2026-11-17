@@ -639,6 +639,7 @@ window.orvixPushState = function (state) {
   renderDiagnostics(state);
   renderHomeTasks(state);
   renderActivity(state);
+  renderNotifications(state);
 
   if (state.character) {
     const key = String(state.character).toUpperCase();
@@ -669,32 +670,75 @@ window.orvixPushState = function (state) {
 };
 
 // ---------------------------------------------------------------------------
-// Notifications: the bell panel lists the app's real SYSTEM messages —
-// the same messages the bridge pushes into the chat log. Nothing is
-// invented: before the first system message arrives the panel shows an
-// honest empty state.
+// Notification Center (Command Center Phase 3): the bell panel is
+// rendered ONLY from the payload's notifications block — the latest
+// records of the desktop app's persistent, bounded store, pushed by
+// the bridge with the state (see orvix/webview_home.py). The page
+// keeps NO notification collection of its own: the previous
+// page-lifetime array that accumulated every SYSTEM chat message
+// without a cap (audit Bugs #3) is gone, chat messages no longer
+// feed this panel at all, and every render replaces the list from
+// the payload. The badge shows the payload's real unreadCount and
+// is hidden at 0. Standalone (no bridge / no block) the panel shows
+// the honest not-connected empty state and the badge stays hidden.
 // ---------------------------------------------------------------------------
-const notifications = [];
-function renderNotifications() {
+function updateNotificationBadge(unreadCount) {
+  const badge = $("#notificationBadge");
+  if (!badge) return;
+  const count = typeof unreadCount === "number" && isFinite(unreadCount)
+    ? Math.max(0, Math.floor(unreadCount)) : 0;
+  badge.textContent = count > 99 ? "99+" : String(count);
+  badge.classList.toggle("hidden", count === 0);
+}
+function renderNotifications(state) {
   const list = $("#notificationsList");
   if (!list) return;
+  const block = connected && state && state.notifications
+    ? state.notifications : null;
+  const items = block && Array.isArray(block.items) ? block.items : [];
+  updateNotificationBadge(block ? block.unreadCount : 0);
   list.replaceChildren();
-  if (!notifications.length) {
+  if (!items.length) {
     const empty = document.createElement("p");
     empty.className = "notifications-empty";
-    empty.textContent = "No notifications yet.";
+    empty.textContent = connected
+      ? "No notifications yet."
+      : "Not connected — desktop bridge required.";
     list.appendChild(empty);
     return;
   }
-  notifications.forEach((text) => {
-    const item = document.createElement("p");
-    item.className = "notification-item";
-    item.textContent = text;
-    list.appendChild(item);
+  items.forEach((item) => {
+    if (!item) return;
+    const row = document.createElement("div");
+    row.className = item.read
+      ? "notification-item" : "notification-item unread";
+    const head = document.createElement("div");
+    head.className = "notification-head";
+    const category = document.createElement("span");
+    category.className = "notification-category";
+    category.textContent = String(item.category || "system").toUpperCase();
+    head.appendChild(category);
+    if (item.time) {
+      const time = document.createElement("span");
+      time.className = "notification-time";
+      time.textContent = String(item.time);
+      head.appendChild(time);
+    }
+    row.appendChild(head);
+    if (item.title) {
+      const title = document.createElement("b");
+      title.className = "notification-title";
+      title.textContent = String(item.title);
+      row.appendChild(title);
+    }
+    if (item.text) {
+      const text = document.createElement("p");
+      text.className = "notification-text";
+      text.textContent = String(item.text);
+      row.appendChild(text);
+    }
+    list.appendChild(row);
   });
-}
-function isSystemMessage(m) {
-  return m.kind === "system" || String(m.speaker || "").toUpperCase() === "SYSTEM";
 }
 
 window.orvixPushMessages = function (list) {
@@ -707,13 +751,8 @@ window.orvixPushMessages = function (list) {
     } else {
       addMessage(m.kind === "user" ? "user" : m.kind === "system" ? "system" : "assistant", m.text, m.speaker, m.time);
     }
-    // Partial stream pushes are never separate notifications: only a
-    // completed (final) message — or an ordinary non-streamed one —
-    // may join the notifications collection.
-    if (isSystemMessage(m) && m.text && m.final !== false) {
-      notifications.push(String(m.text));
-      renderNotifications();
-    }
+    // Chat messages never feed the Notification Center: it renders
+    // only from the state payload's notifications block (Phase 3).
   });
 };
 
@@ -840,9 +879,40 @@ $("#modelSettingsButton").addEventListener("click", () => {
   if (connected && bridgeApi && typeof bridgeApi.openConsole === "function") { callBridge("openConsole", []); return; }
   showTab("settings");
 });
+// Notification Center actions. Mark-read behaviour (Phase 3):
+// opening the panel marks everything read through the bridge, and
+// the explicit Mark-all-read button does the same on demand. The
+// page does NOT update the badge or the unread styling locally —
+// both refresh from the next state payload, which reflects the
+// store's real state after the app applies the enqueued write, so
+// the badge can never claim a read state the store does not have.
 $("#notificationsButton").addEventListener("click", () => {
-  renderNotifications();
-  $("#notificationsPanel").classList.toggle("hidden");
+  renderNotifications(lastState);
+  const panel = $("#notificationsPanel");
+  panel.classList.toggle("hidden");
+  if (!panel.classList.contains("hidden") && connected) {
+    callBridge("markNotificationsRead", []);
+  }
+});
+$("#notificationsMarkRead").addEventListener("click", () => {
+  if (connected && callBridge("markNotificationsRead", [])) {
+    toast("Notifications marked as read.");
+    return;
+  }
+  toast("Not connected — desktop bridge required.");
+});
+// Clear: the app's usual confirmation pattern (same as Clear
+// Conversation) — the confirm states exactly what is removed, then
+// the bridge enqueues the store clear on the app side; the panel
+// and badge refresh from the next payload.
+$("#notificationsClear").addEventListener("click", () => {
+  const note = "Clear all notifications? This removes the notification history. Task history and settings are NOT deleted.";
+  if (!window.confirm(note)) return;
+  if (connected && callBridge("clearNotifications", [])) {
+    toast("Notifications cleared.");
+    return;
+  }
+  toast("Not connected — desktop bridge required.");
 });
 $("#notificationsClose").addEventListener("click", () => {
   $("#notificationsPanel").classList.add("hidden");
@@ -996,6 +1066,7 @@ renderTasks();
 renderDiagnostics(null);
 renderHomeTasks(null);
 renderActivity(null);
+renderNotifications(null);
 renderPerf();
 tryConnect();
 
