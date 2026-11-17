@@ -198,6 +198,174 @@ class PerfHistory:
         return any(cpu is not None or ram is not None for cpu, ram in self._samples)
 
 
+# ---------------------------------------------------------------------------
+# Live Performance Center history (Command Center Phase 7)
+#
+# The bridge pushes state at a nominal ~1.5 s cadence (the WebView
+# push loop rebuilds state every third ~0.5 s iteration, change-only).
+# At that cadence 15 minutes of history is 900 / 1.5 = 600 samples
+# per series — small, fixed-size lists of numbers, cheap to keep and
+# to serialise — so the buffer below is capped at exactly that many
+# samples. The cap is explicit: once full, the oldest sample drops
+# out and the recorded span stops growing at ~15 minutes. Windows
+# longer than the recorded span are NOT available: a 5-minute view
+# needs 300 s of recorded history, a 15-minute view needs 900 s.
+# ---------------------------------------------------------------------------
+PERFORMANCE_SAMPLE_INTERVAL_SECONDS = 1.5
+PERFORMANCE_WINDOWS_SECONDS: tuple = (60, 300, 900)
+MAX_PERFORMANCE_SAMPLES = 600
+
+# Series carried by PerformanceHistory / the payload's performance
+# block, in payload order. cpu / ram / own* are percents (0..100);
+# network* / disk* are byte-per-second rates (unbounded, >= 0).
+PERFORMANCE_SERIES_KEYS: tuple = (
+    "cpu", "ram",
+    "networkUp", "networkDown",
+    "diskRead", "diskWrite",
+    "ownCpu", "ownMemory",
+)
+
+
+def performance_enabled_windows(span_seconds: object) -> dict:
+    """``{window_seconds: enabled}`` for the Performance windows.
+
+    A window is enabled only when at least that many seconds of
+    history have actually been recorded — the page disables the
+    others honestly instead of stretching a shorter recording over
+    a longer label. An unreadable span enables nothing.
+    """
+    span = _optional_float(span_seconds)
+    if span is None or span < 0:
+        span = 0.0
+    return {window: span >= window for window in PERFORMANCE_WINDOWS_SECONDS}
+
+
+class PerformanceHistory:
+    """Bounded rolling history of real performance samples.
+
+    This is the ONE history source for the web Live Performance
+    Center (and, through the payload, for the home Live Performance
+    strip's CPU/RAM tail): the bridge records one sample per state
+    push — the same ``collect_system_stats`` reading the payload's
+    stats block already carries, at the same ~1.5 s cadence. No
+    second collector and no parallel polling loop exists. The Tk
+    strip keeps its own small :class:`PerfHistory` (48 samples),
+    unchanged.
+
+    Each sample is a dict with a monotonic ``t`` timestamp plus one
+    entry per key in :data:`PERFORMANCE_SERIES_KEYS`; every value is
+    ``None`` when that counter could not be read at sample time, so
+    a gap in a chart is a gap in the recording, never an invented
+    zero. The buffer holds at most ``maxlen`` samples (default
+    :data:`MAX_PERFORMANCE_SAMPLES` = 600, ~15 minutes at the push
+    cadence); ``historySpanSeconds`` is therefore the span of THIS
+    session's recording and windows are limited to it honestly.
+    """
+
+    def __init__(self, maxlen: int = MAX_PERFORMANCE_SAMPLES):
+        self.maxlen = max(1, int(maxlen))
+        self._samples: deque = deque(maxlen=self.maxlen)
+
+    def __len__(self) -> int:
+        return len(self._samples)
+
+    @staticmethod
+    def _rate(value: object) -> Optional[float]:
+        rate = _optional_float(value)
+        if rate is None or rate < 0:
+            return None
+        return rate
+
+    def push(self, cpu=None, ram=None, network_up=None, network_down=None,
+             disk_read=None, disk_write=None, own_cpu=None, own_memory=None,
+             timestamp=None) -> None:
+        stamp = _optional_float(timestamp)
+        if stamp is None:
+            stamp = time.monotonic()
+        self._samples.append({
+            "t": stamp,
+            "cpu": clamp_percent(cpu),
+            "ram": clamp_percent(ram),
+            "networkUp": self._rate(network_up),
+            "networkDown": self._rate(network_down),
+            "diskRead": self._rate(disk_read),
+            "diskWrite": self._rate(disk_write),
+            "ownCpu": clamp_percent(own_cpu),
+            "ownMemory": clamp_percent(own_memory),
+        })
+
+    def push_stats(self, stats, timestamp=None) -> None:
+        """Record one sample from a SystemStats-like reading.
+
+        Fields are read with ``getattr`` so a stats object from
+        before the Phase 1 fields existed still records its CPU/RAM
+        and leaves the rest as honest gaps."""
+        self.push(
+            cpu=getattr(stats, "cpu_percent", None),
+            ram=getattr(stats, "ram_percent", None),
+            network_up=getattr(stats, "network_upload_bps", None),
+            network_down=getattr(stats, "network_download_bps", None),
+            disk_read=getattr(stats, "disk_read_bps", None),
+            disk_write=getattr(stats, "disk_write_bps", None),
+            own_cpu=getattr(stats, "own_cpu_percent", None),
+            own_memory=getattr(stats, "own_memory_percent", None),
+            timestamp=timestamp)
+
+    def samples(self) -> tuple:
+        return tuple(dict(sample) for sample in self._samples)
+
+    @property
+    def has_data(self) -> bool:
+        return any(
+            sample[key] is not None
+            for sample in self._samples for key in PERFORMANCE_SERIES_KEYS)
+
+    def span_seconds(self) -> float:
+        """Seconds between the first and last recorded samples.
+
+        Zero with fewer than two samples: a single sample is an
+        instant, not a span, so no window is enabled by it."""
+        if len(self._samples) < 2:
+            return 0.0
+        return max(0.0, self._samples[-1]["t"] - self._samples[0]["t"])
+
+    def enabled_windows(self) -> dict:
+        return performance_enabled_windows(self.span_seconds())
+
+    def series(self, window_seconds=None) -> dict:
+        """Aligned series lists, optionally sliced to a time window.
+
+        Returns ``{"elapsedSeconds": [...], <key>: [...]}`` with one
+        entry per retained sample, oldest first; elapsed seconds are
+        relative to the FIRST retained sample's predecessor — the
+        first recorded sample — so the page can slice by the same
+        rule without a clock of its own. Slicing keeps the tail:
+        samples whose timestamp is within ``window_seconds`` of the
+        LAST sample (a sample exactly on the boundary is kept).
+        ``window_seconds=None`` (or a non-positive value) returns
+        the full recorded series.
+        """
+        samples = list(self._samples)
+        if not samples:
+            result = {"elapsedSeconds": []}
+            for key in PERFORMANCE_SERIES_KEYS:
+                result[key] = []
+            return result
+        first_t = samples[0]["t"]
+        window = _optional_float(window_seconds)
+        if window is not None and window > 0:
+            cutoff = samples[-1]["t"] - window
+            samples = [s for s in samples if s["t"] >= cutoff]
+        result = {"elapsedSeconds": [s["t"] - first_t for s in samples]}
+        for key in PERFORMANCE_SERIES_KEYS:
+            result[key] = [s[key] for s in samples]
+        return result
+
+    def window_series(self, window_seconds) -> dict:
+        """The tail of the recording covering ``window_seconds``."""
+        return self.series(window_seconds=window_seconds)
+
+
 @dataclass(frozen=True)
 class SystemStats:
     """One real reading of the machine the app is running on.
@@ -666,6 +834,9 @@ __all__ = [
     "clamp_percent", "gauge_extent_deg", "format_percent",
     "format_bytes_per_second",
     "gauge_color", "format_uptime", "format_os_name", "PerfHistory",
+    "PERFORMANCE_SAMPLE_INTERVAL_SECONDS", "PERFORMANCE_WINDOWS_SECONDS",
+    "MAX_PERFORMANCE_SAMPLES", "PERFORMANCE_SERIES_KEYS",
+    "performance_enabled_windows", "PerformanceHistory",
     "SystemStats", "collect_system_stats", "ModelStatusLine",
     "model_status_lines", "QuickTile", "quick_action_tiles",
     "performance_caption",

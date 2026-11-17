@@ -36,6 +36,10 @@ except Exception:  # pragma: no cover - depends on optional install
     _webview = None
 
 from .home_data import (
+    MAX_PERFORMANCE_SAMPLES,
+    PERFORMANCE_SAMPLE_INTERVAL_SECONDS,
+    PERFORMANCE_WINDOWS_SECONDS,
+    PerformanceHistory,
     collect_system_stats,
     format_uptime,
     model_status_lines,
@@ -839,8 +843,62 @@ def _top_processes_payload(stats) -> list:
     return result
 
 
+def _performance_payload(stats, history=None, timestamp=None,
+                           top_processes=None) -> dict:
+    """Live Performance Center block for the payload (Phase 7).
+
+    The series come from ONE recorder — a
+    :class:`orvix.home_data.PerformanceHistory` owned by the
+    WebView push loop in production — fed from the SAME stats
+    reading this payload's stats block carries, at the same ~1.5 s
+    push cadence: no second collector, no parallel polling loop.
+    Each payload build records exactly one new sample. A caller
+    without a persistent recorder gets an ephemeral one-sample
+    block (span 0, no window enabled) rather than a fabricated
+    history. ``historySpanSeconds`` is how much history actually
+    exists; a window in ``windows`` is enabled only when the span
+    covers it, so the page can disable 5-/15-minute views honestly
+    until enough history has accrued. Series are bounded at
+    :data:`MAX_PERFORMANCE_SAMPLES` (600 ≈ 15 min at the cadence).
+
+    ``topProcesses`` / the own-process values / GPU / temperature
+    are the Phase 1 stats values themselves, referenced here for
+    the Performance page — never re-collected.
+    """
+    recorder = history
+    if recorder is None or not (
+            hasattr(recorder, "push_stats")
+            and hasattr(recorder, "series")
+            and hasattr(recorder, "span_seconds")):
+        recorder = PerformanceHistory()
+    recorder.push_stats(stats, timestamp=timestamp)
+    span = float(recorder.span_seconds())
+    enabled = {window: span >= window
+               for window in PERFORMANCE_WINDOWS_SECONDS}
+    return {
+        "series": recorder.series(),
+        "historySpanSeconds": span,
+        "sampleCount": len(recorder),
+        "cap": MAX_PERFORMANCE_SAMPLES,
+        "sampleIntervalSeconds": PERFORMANCE_SAMPLE_INTERVAL_SECONDS,
+        "windows": [
+            {"seconds": window, "enabled": bool(enabled[window])}
+            for window in PERFORMANCE_WINDOWS_SECONDS
+        ],
+        "topProcesses": (
+            top_processes if top_processes is not None
+            else _top_processes_payload(stats)),
+        "ownCpuPercent": getattr(stats, "own_cpu_percent", None),
+        "ownMemoryPercent": getattr(stats, "own_memory_percent", None),
+        "gpuPercent": getattr(stats, "gpu_percent", None),
+        "temperatureC": getattr(stats, "temperature_c", None),
+    }
+
+
 def build_state_payload(app, stats=None, memory_query=None,
-                        provider_env=None, provider_health=None) -> dict:
+                        provider_env=None, provider_health=None,
+                        performance_history=None,
+                        performance_timestamp=None) -> dict:
     """JSON-serializable snapshot of real app state for the web page.
 
     Attributes are read defensively (``getattr`` with defaults) so a
@@ -860,6 +918,14 @@ def build_state_payload(app, stats=None, memory_query=None,
     providers block is built from; both default to the real
     sources (os.environ, and the app's recorded check results via
     :func:`_provider_health_map`).
+
+    ``performance_history`` (Command Center Phase 7) is the push
+    loop's persistent :class:`PerformanceHistory` recorder; each
+    build records the current stats reading into it (at
+    ``performance_timestamp`` when a caller supplies one — tests
+    with fake clocks) and the payload's performance block carries
+    its bounded series plus the recorded span. Without a recorder
+    the block is an honest one-sample snapshot.
     """
     if stats is None:
         stats = collect_system_stats()
@@ -877,6 +943,7 @@ def build_state_payload(app, stats=None, memory_query=None,
     # queue stats exactly like the Tk HUD; the tasks entries and the
     # current operation treat None as an empty history.
     task_records = _panel_task_records(app)
+    top_processes = _top_processes_payload(stats)
     return {
         "connected": True,
         "appName": APP_NAME,
@@ -927,6 +994,18 @@ def build_state_payload(app, stats=None, memory_query=None,
         # has run, then "reachable" / "unreachable").
         "providers": _providers_payload(
             app, provider_env=provider_env, provider_health=provider_health),
+        # Command Center Phase 7 (additive): the Live Performance
+        # Center block — bounded recent series for cpu / ram /
+        # network (up+down) / disk (read+write) / own-process
+        # (cpu/ram) recorded by the push loop's PerformanceHistory
+        # from this same stats reading, the recorded span, and the
+        # honestly-enabled 1/5/15-minute windows; plus the Phase 1
+        # top-processes snapshot and own-process values referenced
+        # from stats (see _performance_payload).
+        "performance": _performance_payload(
+            stats, history=performance_history,
+            timestamp=performance_timestamp,
+            top_processes=top_processes),
         "stats": {
             "cpu": stats.cpu_percent,
             "ram": stats.ram_percent,
@@ -948,7 +1027,7 @@ def build_state_payload(app, stats=None, memory_query=None,
             "diskWriteBps": getattr(stats, "disk_write_bps", None),
             "drives": _drives_payload(stats),
             "battery": _battery_payload(stats),
-            "topProcesses": _top_processes_payload(stats),
+            "topProcesses": top_processes,
             "ownCpuPercent": getattr(stats, "own_cpu_percent", None),
             "ownMemoryPercent": getattr(stats, "own_memory_percent", None),
             "gpuPercent": getattr(stats, "gpu_percent", None),
@@ -1273,6 +1352,12 @@ class WebViewHome:
         self.start_error = None
         self._last_state_json = None
         self._push_counter = 0
+        # Live Performance Center history (Phase 7): the ONE
+        # recorder for the performance series, fed one sample per
+        # state build in _push_state_once — the existing ~1.5 s
+        # cadence, no extra polling. Bounded at
+        # MAX_PERFORMANCE_SAMPLES (600 ≈ 15 minutes).
+        self._performance_history = PerformanceHistory()
 
     @staticmethod
     def index_path() -> Path:
@@ -1473,7 +1558,8 @@ class WebViewHome:
             # reflected the same way, still filtered.
             payload = build_state_payload(
                 self.app,
-                memory_query=getattr(self.api, "_memory_query", ""))
+                memory_query=getattr(self.api, "_memory_query", ""),
+                performance_history=self._performance_history)
             payload_json = json.dumps(payload)
         except Exception:
             return

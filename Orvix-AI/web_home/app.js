@@ -338,6 +338,182 @@ function renderPerf() {
   if (caption) caption.textContent = `CPU ${fmtPercent(perfCpu)} · RAM ${fmtPercent(perfRam)}`;
 }
 
+// ---------------------------------------------------------------------------
+// Live Performance Center (Command Center Phase 7): the Performance
+// nav destination renders ONLY from the payload's performance block
+// — the bounded series the bridge records from the same stats
+// readings at its normal push cadence (cpu / ram / network up+down /
+// disk read+write / own-process cpu+ram), the recorded span, the
+// top-processes snapshot and the own-process values. The page keeps
+// no performance collection of its own: the home strip above and
+// this page read the SAME pushed series. A 1/5/15-minute window is
+// selectable only once that much history has actually been
+// recorded; before that its button is disabled and the note says
+// recording is still in progress — a shorter recording is never
+// stretched over a longer label. Temperature / GPU have no source
+// on Windows with this stack, so their rows render "N/A on
+// Windows" explicitly instead of disappearing. Standalone (no
+// bridge) the page shows the honest not-connected state.
+// ---------------------------------------------------------------------------
+const PERF_WINDOW_SECONDS = [60, 300, 900];
+const PERF_MAX_BARS = 60;
+let perfWindowSeconds = 60;
+function perfWindowEnabled(windowSeconds, spanSeconds) {
+  return typeof spanSeconds === "number" && isFinite(spanSeconds)
+    && spanSeconds >= windowSeconds;
+}
+function perfWindowSlice(series, windowSeconds) {
+  if (!series || typeof series !== "object") return {};
+  const elapsed = Array.isArray(series.elapsedSeconds) ? series.elapsedSeconds : [];
+  const reference = Array.isArray(series.cpu) ? series.cpu : elapsed;
+  const count = reference.length;
+  if (!count) return series;
+  let start = 0;
+  if (windowSeconds && windowSeconds > 0) {
+    if (elapsed.length === count) {
+      const cutoff = elapsed[elapsed.length - 1] - windowSeconds;
+      start = elapsed.findIndex((value) => typeof value === "number" && value >= cutoff);
+      if (start < 0) start = count;
+    } else {
+      // No recorded timestamps: fall back to the bridge's nominal
+      // ~1.5 s push cadence for the point count.
+      start = Math.max(0, count - Math.ceil(windowSeconds / 1.5));
+    }
+  }
+  const out = {};
+  Object.keys(series).forEach((key) => {
+    out[key] = Array.isArray(series[key]) ? series[key].slice(start) : series[key];
+  });
+  return out;
+}
+function perfLatest(values) {
+  if (!Array.isArray(values)) return null;
+  for (let i = values.length - 1; i >= 0; i--) {
+    if (values[i] != null) return values[i];
+  }
+  return null;
+}
+function perfBarScale(front, back) {
+  let max = 0;
+  [front, back].forEach((values) => {
+    (values || []).forEach((value) => {
+      if (typeof value === "number" && isFinite(value) && value > max) max = value;
+    });
+  });
+  return max;
+}
+function renderPerfChart(el, front, back, isRate) {
+  if (!el) return;
+  const frontValues = Array.isArray(front) ? front : [];
+  const backValues = Array.isArray(back) ? back : [];
+  const count = Math.max(frontValues.length, backValues.length);
+  const scale = isRate ? perfBarScale(frontValues, backValues) : 100;
+  const heightFor = (value) => {
+    if (value == null || typeof value !== "number" || !isFinite(value)) return "0%";
+    if (!scale || scale <= 0) return "0%";
+    return Math.max(0, Math.min(100, (value / scale) * 100)) + "%";
+  };
+  // At most PERF_MAX_BARS columns, sampled evenly and always
+  // including the latest sample — the same equalizer-column
+  // rendering as the home strip, just over a longer series.
+  const indices = [];
+  if (count <= PERF_MAX_BARS) {
+    for (let i = 0; i < count; i++) indices.push(i);
+  } else {
+    const step = (count - 1) / (PERF_MAX_BARS - 1);
+    for (let i = 0; i < PERF_MAX_BARS; i++) indices.push(Math.round(i * step));
+  }
+  el.replaceChildren();
+  indices.forEach((index) => {
+    const col = document.createElement("span");
+    const backBar = document.createElement("i"); backBar.className = "ram-bar";
+    backBar.style.height = heightFor(backValues[index]);
+    const frontBar = document.createElement("i"); frontBar.className = "cpu-bar";
+    frontBar.style.height = heightFor(frontValues[index]);
+    col.append(backBar, frontBar);
+    el.appendChild(col);
+  });
+}
+function renderPerformance(state) {
+  const block = connected && state && state.performance ? state.performance : null;
+  const span = block && typeof block.historySpanSeconds === "number"
+    ? block.historySpanSeconds : 0;
+  const note = $("#perfHistoryNote");
+  $$(".perf-window-button").forEach((button) => {
+    const windowSeconds = Number(button.dataset.window);
+    const enabled = perfWindowEnabled(windowSeconds, span);
+    button.disabled = !enabled;
+    button.classList.toggle("active", windowSeconds === perfWindowSeconds);
+    button.title = enabled ? "" : "Recording… — this window needs "
+      + windowSeconds + "s of recorded history";
+  });
+  if (note) {
+    if (!connected) note.textContent = "Not connected — desktop bridge required.";
+    else if (!block || !span) note.textContent = "Recording… — windows unlock as history accrues (1 min after 60s recorded).";
+    else note.textContent = "Recorded " + Math.floor(span) + "s of history"
+      + (PERF_WINDOW_SECONDS.some((w) => !perfWindowEnabled(w, span))
+        ? " — longer windows unlock as recording continues." : ".");
+  }
+  const series = block && block.series ? block.series : {};
+  const sliced = perfWindowSlice(
+    series, perfWindowEnabled(perfWindowSeconds, span) ? perfWindowSeconds : null);
+  renderPerfChart($("#perfCpuChart"), sliced.cpu, null, false);
+  renderPerfChart($("#perfRamChart"), sliced.ram, null, false);
+  renderPerfChart($("#perfNetworkChart"), sliced.networkDown, sliced.networkUp, true);
+  renderPerfChart($("#perfDiskChart"), sliced.diskRead, sliced.diskWrite, true);
+  setDetailText("perfCpuCaption", fmtPercent(perfLatest(sliced.cpu)));
+  setDetailText("perfRamCaption", fmtPercent(perfLatest(sliced.ram)));
+  setDetailText("perfNetworkCaption",
+    "↓ " + fmtRate(perfLatest(sliced.networkDown)) + " · ↑ " + fmtRate(perfLatest(sliced.networkUp)));
+  setDetailText("perfDiskCaption",
+    "R " + fmtRate(perfLatest(sliced.diskRead)) + " · W " + fmtRate(perfLatest(sliced.diskWrite)));
+  const ownCpu = block ? block.ownCpuPercent : null;
+  const ownRam = block ? block.ownMemoryPercent : null;
+  if (ownCpu == null && ownRam == null) {
+    setDetailText("perfOwnValue", "N/A");
+  } else {
+    const ownPct = (v) => (v == null ? "N/A" : Math.round(v) + "%");
+    setDetailText("perfOwnValue", "CPU " + ownPct(ownCpu) + " · RAM " + ownPct(ownRam));
+  }
+  // Temperature / GPU: no source on Windows with this stack — the
+  // payload carries explicit nulls, so the rows say so plainly.
+  setDetailText("perfTemperatureValue",
+    block && block.temperatureC != null ? Math.round(block.temperatureC) + " °C" : "N/A on Windows");
+  setDetailText("perfGpuValue",
+    block && block.gpuPercent != null ? Math.round(block.gpuPercent) + "%" : "N/A on Windows");
+  const body = $("#perfProcessesBody");
+  const empty = $("#perfProcessesEmpty");
+  if (body && empty) {
+    body.replaceChildren();
+    const processes = block && Array.isArray(block.topProcesses) ? block.topProcesses : [];
+    if (!processes.length) {
+      empty.textContent = connected
+        ? "No process data yet"
+        : "Not connected — desktop bridge required.";
+      empty.classList.remove("hidden");
+    } else {
+      empty.classList.add("hidden");
+      processes.forEach((proc) => {
+        if (!proc || !proc.name) return;
+        const row = document.createElement("tr");
+        const name = document.createElement("td");
+        name.textContent = String(proc.name);
+        const cpu = document.createElement("td");
+        cpu.textContent = proc.cpuPercent == null ? "N/A" : Math.round(proc.cpuPercent) + "%";
+        const memory = document.createElement("td");
+        memory.textContent = proc.memoryPercent == null ? "N/A" : Math.round(proc.memoryPercent) + "%";
+        row.append(name, cpu, memory);
+        body.appendChild(row);
+      });
+    }
+  }
+}
+$$(".perf-window-button").forEach((button) => button.addEventListener("click", () => {
+  const windowSeconds = Number(button.dataset.window);
+  if (PERF_WINDOW_SECONDS.indexOf(windowSeconds) !== -1) perfWindowSeconds = windowSeconds;
+  renderPerformance(lastState);
+}));
+
 function setRing(stat, value) {
   const ring = document.querySelector(`.ring[data-stat="${stat}"]`);
   if (!ring) return;
@@ -643,6 +819,7 @@ window.orvixPushState = function (state) {
   renderEmergency(state);
   renderMemory(state);
   renderModels(state);
+  renderPerformance(state);
 
   if (state.character) {
     const key = String(state.character).toUpperCase();
@@ -665,10 +842,25 @@ window.orvixPushState = function (state) {
 
   perfCpu = stats.cpu == null ? null : stats.cpu;
   perfRam = stats.ram == null ? null : stats.ram;
-  perfData.push(stats.cpu == null ? null : stats.cpu);
-  while (perfData.length > PERF_BARS) perfData.shift();
-  perfRamData.push(stats.ram == null ? null : stats.ram);
-  while (perfRamData.length > PERF_BARS) perfRamData.shift();
+  // The home strip and the Performance page share ONE history: the
+  // payload's performance series (Phase 7). When it is present the
+  // strip renders its CPU/RAM tail; only an older payload without
+  // the block falls back to accumulating the pushed samples here,
+  // exactly as the strip always did.
+  const perfSeries = state.performance && state.performance.series
+    ? state.performance.series : null;
+  if (perfSeries && Array.isArray(perfSeries.cpu)) {
+    perfData.length = 0;
+    perfSeries.cpu.slice(-PERF_BARS).forEach((value) => perfData.push(value == null ? null : value));
+    perfRamData.length = 0;
+    (Array.isArray(perfSeries.ram) ? perfSeries.ram : []).slice(-PERF_BARS)
+      .forEach((value) => perfRamData.push(value == null ? null : value));
+  } else {
+    perfData.push(stats.cpu == null ? null : stats.cpu);
+    while (perfData.length > PERF_BARS) perfData.shift();
+    perfRamData.push(stats.ram == null ? null : stats.ram);
+    while (perfRamData.length > PERF_BARS) perfRamData.shift();
+  }
   renderPerf();
 };
 
@@ -1428,35 +1620,48 @@ function showTab(tab) {
   const tasksView = $("#tasksView");
   const memoryView = $("#memoryView");
   const modelsView = $("#modelsView");
+  const performanceView = $("#performanceView");
   if (tab === "home") {
     $("#homeView").classList.remove("hidden"); $("#secondaryView").classList.add("hidden");
     if (tasksView) tasksView.classList.add("hidden");
     if (memoryView) memoryView.classList.add("hidden");
     if (modelsView) modelsView.classList.add("hidden");
+    if (performanceView) performanceView.classList.add("hidden");
   } else if (tab === "tasks") {
     $("#homeView").classList.add("hidden"); $("#secondaryView").classList.add("hidden");
     if (tasksView) tasksView.classList.remove("hidden");
     if (memoryView) memoryView.classList.add("hidden");
     if (modelsView) modelsView.classList.add("hidden");
+    if (performanceView) performanceView.classList.add("hidden");
     renderTasks();
   } else if (tab === "memory") {
     $("#homeView").classList.add("hidden"); $("#secondaryView").classList.add("hidden");
     if (tasksView) tasksView.classList.add("hidden");
     if (memoryView) memoryView.classList.remove("hidden");
     if (modelsView) modelsView.classList.add("hidden");
+    if (performanceView) performanceView.classList.add("hidden");
     renderMemory(lastState);
   } else if (tab === "models") {
     $("#homeView").classList.add("hidden"); $("#secondaryView").classList.add("hidden");
     if (tasksView) tasksView.classList.add("hidden");
     if (memoryView) memoryView.classList.add("hidden");
     if (modelsView) modelsView.classList.remove("hidden");
+    if (performanceView) performanceView.classList.add("hidden");
     renderModels(lastState);
+  } else if (tab === "performance") {
+    $("#homeView").classList.add("hidden"); $("#secondaryView").classList.add("hidden");
+    if (tasksView) tasksView.classList.add("hidden");
+    if (memoryView) memoryView.classList.add("hidden");
+    if (modelsView) modelsView.classList.add("hidden");
+    if (performanceView) performanceView.classList.remove("hidden");
+    renderPerformance(lastState);
   } else {
     const data = tabContent[tab] || tabContent.tools;
     $("#homeView").classList.add("hidden"); $("#secondaryView").classList.remove("hidden");
     if (tasksView) tasksView.classList.add("hidden");
     if (memoryView) memoryView.classList.add("hidden");
     if (modelsView) modelsView.classList.add("hidden");
+    if (performanceView) performanceView.classList.add("hidden");
     $("#secondaryTitle").textContent = data.title; $("#secondaryDescription").textContent = data.desc;
     $("#secondaryCards").replaceChildren();
     data.cards.forEach(([title, desc]) => {
@@ -1509,6 +1714,7 @@ $("#backHome").addEventListener("click", () => showTab("home"));
 $("#tasksBackHome").addEventListener("click", () => showTab("home"));
 $("#memoryBackHome").addEventListener("click", () => showTab("home"));
 $("#modelsBackHome").addEventListener("click", () => showTab("home"));
+$("#performanceBackHome").addEventListener("click", () => showTab("home"));
 
 // Initial state: not connected until the bridge proves otherwise, and an
 // empty performance strip (all bars at 0 height, caption shows dashes).
@@ -1525,6 +1731,7 @@ renderNotifications(null);
 renderEmergency(null);
 renderMemory(null);
 renderModels(null);
+renderPerformance(null);
 renderPerf();
 tryConnect();
 

@@ -467,3 +467,36 @@ body::after{background:radial-gradient(620px 380px at 16% -6%,rgba(0,140,255,.17
 .provider-test-button:hover:not(:disabled){background:#0a3b5e}
 .provider-test-button:disabled{opacity:.45;cursor:not-allowed}
 .provider-empty{font-size:12px;color:var(--muted);margin:16px 0 6px}
+
+/* ==========================================================================
+   Command Center Phase 7 — Live Performance Center: the Performance
+   nav destination with its 1/5/15-minute window selector (disabled
+   buttons are the honest not-enough-history-yet presentation), four
+   chart cards reusing the home strip's equalizer-column rendering,
+   the app-usage / temperature / GPU detail rows (temperature and GPU
+   render "N/A on Windows"), and the top-processes table. Everything
+   is rendered by app.js from the bridge payload's performance block
+   only.
+   ========================================================================== */
+.perf-window-row{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-top:16px}
+.perf-window-label{font-size:10px;color:#7295b4;font-weight:800;letter-spacing:1px}
+.perf-window-button{background:#082844;border:1px solid #1385b7;border-radius:20px;padding:7px 16px;color:var(--cyan);font-weight:800;font-size:11px}
+.perf-window-button:hover:not(:disabled){background:#0a3b5e}
+.perf-window-button.active{background:linear-gradient(120deg,#007fce,#00bfe9);color:#fff;border-color:#00dfff;box-shadow:0 0 14px rgba(0,191,255,.45)}
+.perf-window-button:disabled{opacity:.45;cursor:not-allowed;box-shadow:none}
+.perf-history-note{font-size:11px;color:#87a9c5;font-weight:700;margin-left:6px}
+.perf-charts-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:12px;margin-top:16px}
+.perf-chart-card{padding:14px 16px;border:1px solid #12628f;border-radius:12px;background:#08213b}
+.perf-chart-heading{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:6px}
+.perf-chart-heading b{font-size:12px;color:#eaf6ff;letter-spacing:1px}
+.perf-chart-heading span{font-size:11px;color:var(--cyan);font-weight:800;text-align:right}
+.perf-page-chart{height:110px;margin:5px 0 0}
+.perf-details{margin-top:16px;border:1px solid #086a9b;border-radius:12px;background:#06213b;padding:6px 12px}
+.perf-processes-heading{font-size:12px;font-weight:800;letter-spacing:1px;color:var(--cyan);margin:20px 0 8px;text-transform:uppercase}
+.perf-processes-table{width:100%;border-collapse:collapse;font-size:12px}
+.perf-processes-table th{font-size:10px;color:#7295b4;font-weight:800;letter-spacing:1px;text-align:left;padding:7px 12px;border-bottom:1px solid #0d3555}
+.perf-processes-table th:nth-child(2),.perf-processes-table th:nth-child(3),.perf-processes-table td:nth-child(2),.perf-processes-table td:nth-child(3){text-align:right}
+.perf-processes-table td{padding:8px 12px;border-bottom:1px solid #0d3555;color:#c8ddef;overflow-wrap:anywhere}
+.perf-processes-table td:nth-child(2),.perf-processes-table td:nth-child(3){color:var(--cyan);font-weight:800}
+.perf-processes-table tbody tr:last-child td{border-bottom:none}
+.perf-processes-empty{font-size:12px;color:var(--muted);margin:4px 0 6px}
