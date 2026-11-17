@@ -991,6 +991,17 @@ window.orvixPushState = function (state) {
   renderModels(state);
   renderPerformance(state);
 
+  if (state.accentPreset) {
+    // Accent preset (Phase 10): the payload's preset drives the
+    // page root's data-accent attribute; the stylesheet's
+    // per-preset rules switch ONLY the base brand tokens (--cyan /
+    // --primary / --secondary and the --brand* tokens). This is a
+    // separate layer from the per-character ambient tint below
+    // (--accent, driven by data-character): both compose, and
+    // neither touches the core-state colours.
+    document.documentElement.dataset.accent = String(state.accentPreset).toUpperCase();
+  }
+
   if (state.character) {
     const key = String(state.character).toUpperCase();
     // Personality theme (Phase 8): the payload's character drives

@@ -591,3 +591,51 @@ body::after{background:radial-gradient(620px 380px at 16% -6%,rgba(0,140,255,.17
 .secondary-card-action{margin-top:12px;background:#082844;border:1px solid #1385b7;border-radius:8px;padding:8px 16px;color:var(--cyan);font-size:11px;font-weight:800}
 .secondary-card-action:hover{background:#0a3b5e}
 @media(max-width:760px){.command-bar{flex-wrap:wrap}.command-bar-composer{order:3;flex-basis:100%}.command-stop-button{margin-left:auto}}
+
+/* ==========================================================================
+   Command Center Phase 10 — appearance accent presets + responsive
+   verification fixes.
+
+   Accent presets: the payload's accentPreset drives a data-accent
+   attribute on the page root (<html>); the rules below switch ONLY
+   the base brand tokens — --cyan / --primary / --secondary (the
+   design tokens the Phase 11/12 styles already consume) and the
+   --brand* tokens derived from the same values. The values mirror
+   orvix/settings.py ACCENT_PRESETS exactly (a unit test asserts
+   they never drift). The default preset (NEON_BLUE) is the shipped
+   palette, so existing users see no change until they pick one.
+
+   This is a SEPARATE layer from the Phase 8 per-character ambient
+   tint: data-character switches --accent / --accent-rgb (aurora,
+   panel edge tint, character-card accents); data-accent switches
+   the brand tokens and the brand surfaces below (brand mark, nav
+   active glow, clock label, composer mic/send). The two compose —
+   no rule here touches a surface the character layer owns, and
+   neither layer touches the core-state colours.
+   ========================================================================== */
+:root{--brand:#00DFFF;--brand-rgb:0,223,255;--brand-primary:#008CFF;--brand-primary-rgb:0,140,255;--brand-secondary:#146BFF;--brand-secondary-rgb:20,107,255}
+:root[data-accent="NEON_BLUE"]{--cyan:#00DFFF;--primary:#008CFF;--secondary:#146BFF;--brand:#00DFFF;--brand-rgb:0,223,255;--brand-primary:#008CFF;--brand-primary-rgb:0,140,255;--brand-secondary:#146BFF;--brand-secondary-rgb:20,107,255}
+:root[data-accent="EMERALD"]{--cyan:#00E88F;--primary:#00B578;--secondary:#0E9F6E;--brand:#00E88F;--brand-rgb:0,232,143;--brand-primary:#00B578;--brand-primary-rgb:0,181,120;--brand-secondary:#0E9F6E;--brand-secondary-rgb:14,159,110}
+:root[data-accent="VIOLET"]{--cyan:#A78BFA;--primary:#8B5CF6;--secondary:#6D28D9;--brand:#A78BFA;--brand-rgb:167,139,250;--brand-primary:#8B5CF6;--brand-primary-rgb:139,92,246;--brand-secondary:#6D28D9;--brand-secondary-rgb:109,40,217}
+:root[data-accent="AMBER"]{--cyan:#FFC46B;--primary:#FF8A00;--secondary:#F97316;--brand:#FFC46B;--brand-rgb:255,196,107;--brand-primary:#FF8A00;--brand-primary-rgb:255,138,0;--brand-secondary:#F97316;--brand-secondary-rgb:249,115,22}
+:root[data-accent] .brand-mark{border-color:var(--brand);text-shadow:0 0 12px var(--brand);box-shadow:0 0 20px rgba(var(--brand-rgb),.45),inset 0 0 16px rgba(var(--brand-rgb),.27)}
+:root[data-accent] .brand-copy small{color:var(--brand)}
+:root[data-accent] .clock small{color:var(--brand)}
+:root[data-accent] .nav-item.active{box-shadow:0 0 18px rgba(var(--brand-rgb),.45),inset 0 0 12px rgba(var(--brand-rgb),.18);text-shadow:0 0 9px rgba(var(--brand-rgb),.85)}
+:root[data-accent] .mic-button{border-color:var(--brand);box-shadow:0 0 16px rgba(var(--brand-rgb),.4)}
+:root[data-accent] .send-button{background:linear-gradient(120deg,var(--brand-primary),var(--brand));border-color:var(--brand);box-shadow:0 0 18px rgba(var(--brand-rgb),.35)}
+
+/* Responsive verification (Phase 10, four-size pass at 1920x1080,
+   1600x900, 1366x768, 1280x720): the top navigation grew to ten
+   destinations across Phases 5-9, but the top bar's breakpoints
+   were sized for six — its content measured ~1706px wide, so at
+   1600px and below the status pill, clock and top-right buttons
+   were pushed past the viewport edge (document scrollWidth 1706
+   at 1600/1366/1280). Fixes, inside the existing breakpoint
+   system: compact the top bar under 1750px, and under 1450px let
+   the nav scroll horizontally inside its own flex slot instead
+   of overflowing the page. At 720px-class heights the hero and
+   chat log shrink so the centre column is not crowded out. */
+@media(max-width:1750px){.topbar{gap:14px}.brand{min-width:212px}.brand-copy strong{font-size:24px}.nav-item{padding:10px 11px}.clock{min-width:104px}}
+@media(max-width:1450px){.main-nav{overflow-x:auto;overflow-y:hidden;scrollbar-width:thin;min-width:0}.nav-item{white-space:nowrap}}
+@media(max-height:800px){.hero{min-height:300px}.chat-log{max-height:180px}}

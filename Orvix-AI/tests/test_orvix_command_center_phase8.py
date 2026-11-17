@@ -322,7 +322,9 @@ class StaticPhase8Tests(unittest.TestCase):
 
     # -- Personality themes -----------------------------------------
     def test_root_data_character_attribute_and_payload_driver(self):
-        self.assertIn('<html lang="en" data-character="LUNA">',
+        # Phase 10 added the data-accent attribute beside it; the
+        # data-character attribute itself is unchanged.
+        self.assertIn('<html lang="en" data-character="LUNA" data-accent="NEON_BLUE">',
                       self.index_html)
         self.assertIn("document.documentElement.dataset.character = key;",
                       self.app_js)

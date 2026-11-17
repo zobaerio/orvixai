@@ -39,13 +39,22 @@ Integration points in `app.py`:
 | `startListening()` | `app._listen` | Same mic / speech path as the Tk mic button. |
 | `setWakeWord(bool)` | Wake-word toggle | Same wake-word engine as the Tk top bar. |
 | `openConsole()` | Raise the Tk window | Brings the withdrawn Tk console back to the front. |
+| `stopAll()` / `setTakeControl(bool)` | Emergency Stop / Take Control (Phase 4) | Stop composes the app's existing cancel + stop-speaking + queue-disarm paths; Take Control forces approval on delegated steps. |
+| `markNotificationsRead()` / `clearNotifications()` | Notification Center store (Phase 3) | Read/clear act on the app's persistent notification store. |
+| `memorySearch(q)` / `memoryForget(id)` / `memoryClear()` | Memory Center (Phase 5) | Search is a view filter; forget/clear go through the same enqueue discipline as every other write. |
+| `testProvider(id)` | Models page (Phase 6) | Runs that provider's real connection check in the desktop app. |
+| `cancelTask(id)` | Tasks view (Phase 9) | Routes to the app's existing queued/running cancel paths only. |
 
 ### Python → JavaScript
 
 | JS function | Cadence / trigger | Payload |
 | --- | --- | --- |
-| `window.orvixPushState(json)` | ~every 1.5 s, only when changed | Gauges / OS / uptime from `home_data.collect_system_stats`, model + status lines from settings / `home_data.model_status_lines`, core mode / state, active character, wake state, app version. |
+| `window.orvixPushState(json)` | ~every 1.5 s, only when changed | Gauges / OS / uptime from `home_data.collect_system_stats`, model + status lines from settings / `home_data.model_status_lines`, core mode / state, active character, wake state, app version. The Command Center phases extended the payload additively: Phase 1 stats (network/disk rates, drives, battery, top processes), Phase 2 Control Center / activity / current-operation blocks, Phase 3 notifications, Phase 5 memory, Phase 6 providers, Phase 7 performance history, Phase 8 approvals + character accent, and Phase 10 `accentPreset` (the Settings > Appearance preset key; the page sets the root `data-accent` attribute from it, separately from the Phase 8 `data-character` ambient tint). Since Phase 10 the model panel's INTERNET status line carries the endpoint probe's verdict (`model.health`) instead of a permanent "Not checked". |
 | `window.orvixPushMessages(list)` | On every console message | Mirrors every message that passes through the `_write_message` funnel (`speaker`, `text`, `kind`). |
+
+## Views
+
+The top navigation opens: **Home** (the command-center dashboard: system overview, character cards, voice control, hero reactor, diagnostics, quick actions, active tasks, recent activity, model status, live performance strip), **Tools** and **About** (secondary card views), **Tasks** (task records with progress and cancel), **AI Core** (the eight core states with the live one highlighted, current operation, pending approvals, activity), **Memory** (the Memory Center over the app's MemoryStore), **Models** (the Model Management Center: registry providers, capabilities, per-provider connection tests, desktop-endpoint summary), **Performance** (the Live Performance Center: recorded CPU/RAM/network/disk/own-process series with honest time windows, top processes, temperature/GPU as N/A on Windows), **Voice** (focuses the home Voice Control panel) and **Settings** (opens the desktop Settings dialog via the console). The **Notification Center** opens from the bell (unread badge, categories, mark-all-read, clear). A **persistent command bar** sits at the bottom of the shell on every view — the one composer, its status line, and the Stop control while work is running (Phase 9).
 
 ## Honesty rules
 
