@@ -47,6 +47,7 @@ from orvix.startup import is_windows_startup_enabled, set_windows_startup
 from orvix.ui_formatters import bounded_float, bounded_int, bounded_window_origin, format_header_clock, format_message_time
 from orvix.webview_home import WebViewHome, webview_available, webview_home_enabled
 from orvix.notify import notify_event
+from orvix.notify import NotificationStore, record_event
 
 BG = "#0b1120"
 PANEL = "#111a2e"
@@ -108,6 +109,15 @@ class OrvixDesktop:
         self._stream_active = False
         self._stream_text = ""
         self.task_store = TaskStore()
+        # Notification Center (Command Center Phase 3): the
+        # persistent bounded store behind the web bell and the Tk
+        # Notifications window. A creation failure must not stop
+        # the console opening — events then stay toast/in-app only.
+        self.notification_store: NotificationStore | None = None
+        try:
+            self.notification_store = NotificationStore()
+        except Exception:
+            self.notification_store = None
         self._startup_recovered_task_count = 0
         self._task_recovery_error: str | None = None
         try:
@@ -120,6 +130,7 @@ class OrvixDesktop:
         self._active_task_command = ""
         self._queue_armed = False
         self._task_history_window: tk.Toplevel | None = None
+        self._notifications_window: tk.Toplevel | None = None
         self._tray_icon = None
         self._tray_thread: threading.Thread | None = None
         self._background_mode = False
@@ -1211,6 +1222,12 @@ class OrvixDesktop:
         self.cancel_task_btn.pack(fill="x", pady=(0, 5))
         tk.Button(
             task_buttons, text="▤  TASK HISTORY", command=self._open_task_history,
+            bg="#102b40", fg=ACCENT, activebackground="#194661", activeforeground=TEXT,
+            relief="flat", bd=0, font=("Segoe UI Semibold", 8, "bold"), padx=8, pady=8,
+            cursor="hand2"
+        ).pack(fill="x", pady=(0, 5))
+        tk.Button(
+            task_buttons, text="♧  NOTIFICATIONS", command=self._open_notifications,
             bg="#102b40", fg=ACCENT, activebackground="#194661", activeforeground=TEXT,
             relief="flat", bd=0, font=("Segoe UI Semibold", 8, "bold"), padx=8, pady=8,
             cursor="hand2"
@@ -3366,7 +3383,23 @@ class OrvixDesktop:
         exists (background mode). It never raises and never
         replaces the in-app SYSTEM messages, which remain the
         fallback when the tray is unavailable or the toggle is off.
+
+        Notification Center (Phase 3): the same event is also
+        recorded in the persistent store via record_event, which
+        applies the SAME per-kind toggle — a toggled-off kind is
+        neither toasted nor recorded. Recording does not need the
+        tray, so the centre keeps the event even in foreground
+        mode where no toast could fire.
         """
+        try:
+            record_event(
+                getattr(self, "notification_store", None),
+                self.settings,
+                kind,
+                detail=detail,
+            )
+        except Exception:
+            pass
         try:
             notify_event(
                 self.settings,
@@ -3376,6 +3409,150 @@ class OrvixDesktop:
             )
         except Exception:
             pass
+
+    # -- Notification Center (Command Center Phase 3) -----------------
+
+    def _mark_notifications_read_from_web(self) -> None:
+        """Bridge entry point for the web Mark-all-read action.
+
+        Runs on the Tk/event thread (the bridge only enqueues it),
+        like every other bridge write. Marks the whole store read;
+        the web badge refreshes from the next state payload.
+        """
+        store = getattr(self, "notification_store", None)
+        if store is None:
+            return
+        try:
+            store.mark_all_read()
+        except Exception:
+            pass
+
+    def _clear_notifications_from_web(self) -> None:
+        """Bridge entry point for the web Clear action.
+
+        The web page already asked the user to confirm in its own
+        UI, so no second desktop prompt is shown. Only the
+        notification history is cleared — task history and
+        settings are never touched.
+        """
+        store = getattr(self, "notification_store", None)
+        if store is None:
+            return
+        try:
+            store.clear()
+        except Exception:
+            pass
+
+    def _open_notifications(self) -> None:
+        """Tk parity for the Notification Center: a simple window
+        over the same persistent store the web bell shows — newest
+        first with category, time and read state, plus Mark all
+        read and a confirmed Clear. The list is a snapshot taken
+        when the window opens (refreshed by its own buttons), not
+        a live feed."""
+        existing = getattr(self, "_notifications_window", None)
+        if existing is not None:
+            try:
+                if existing.winfo_exists():
+                    existing.deiconify()
+                    existing.lift()
+                    return
+            except tk.TclError:
+                pass
+        win = tk.Toplevel(self.root)
+        self._notifications_window = win
+        win.title("ORVIX — Notifications")
+        win.configure(bg=BG)
+        win.geometry("540x430")
+        win.protocol(
+            "WM_DELETE_WINDOW",
+            lambda: (win.destroy(), setattr(self, "_notifications_window", None)))
+        header = tk.Label(win, text="Notifications", bg=BG, fg=TEXT,
+                          font=("Segoe UI Semibold", 10, "bold"))
+        header.pack(anchor="w", padx=14, pady=(12, 6))
+        body = tk.Text(win, bg=PANEL, fg=TEXT, relief="flat", bd=0,
+                       font=("Segoe UI", 9), wrap="word",
+                       padx=10, pady=8, state="disabled")
+        body.pack(fill="both", expand=True, padx=14, pady=(0, 10))
+        store = getattr(self, "notification_store", None)
+
+        def refresh() -> None:
+            records = []
+            if store is not None:
+                try:
+                    records = store.list()
+                except Exception:
+                    records = []
+            unread = sum(1 for record in records if not record.get("read"))
+            header.configure(
+                text=f"Notifications — {len(records)} stored · {unread} unread")
+            body.configure(state="normal")
+            body.delete("1.0", "end")
+            if not records:
+                body.insert("1.0", "No notifications yet.")
+            for record in records:
+                stamp = ""
+                timestamp = record.get("timestamp")
+                if isinstance(timestamp, (int, float)) and not isinstance(timestamp, bool):
+                    try:
+                        stamp = format_message_time(
+                            datetime.fromtimestamp(timestamp))
+                    except Exception:
+                        stamp = ""
+                line = (
+                    f"[{str(record.get('category') or 'system').upper()}] "
+                    f"{record.get('title') or ''}"
+                    + (f" — {record.get('text')}" if record.get("text") else "")
+                    + (f"  ·  {stamp}" if stamp else "")
+                    + ("" if record.get("read") else "  ·  UNREAD")
+                    + "\n\n"
+                )
+                body.insert("end", line)
+            body.configure(state="disabled")
+
+        def mark_all_read() -> None:
+            if store is not None:
+                try:
+                    store.mark_all_read()
+                except Exception:
+                    pass
+            refresh()
+
+        def clear_all() -> None:
+            if store is None:
+                return
+            confirmed = messagebox.askyesno(
+                "Clear notifications",
+                "Clear all notifications?\n\n"
+                "This removes the notification history shown here "
+                "and in the web home.\n\n"
+                "Task history and settings are NOT deleted.",
+                parent=win)
+            if not confirmed:
+                return
+            try:
+                store.clear()
+            except Exception:
+                pass
+            refresh()
+
+        buttons = tk.Frame(win, bg=BG)
+        buttons.pack(fill="x", padx=14, pady=(0, 12))
+        tk.Button(
+            buttons, text="MARK ALL READ", command=mark_all_read,
+            bg="#102b40", fg=ACCENT, activebackground="#194661",
+            activeforeground=TEXT, relief="flat", bd=0,
+            font=("Segoe UI Semibold", 8, "bold"), padx=10, pady=7,
+            cursor="hand2",
+        ).pack(side="left")
+        tk.Button(
+            buttons, text="CLEAR", command=clear_all,
+            bg="#4a2430", fg="#fecaca", activebackground="#702b3b",
+            activeforeground="#ffffff", relief="flat", bd=0,
+            font=("Segoe UI Semibold", 8, "bold"), padx=10, pady=7,
+            cursor="hand2",
+        ).pack(side="left", padx=(8, 0))
+        refresh()
 
     # -- live endpoint health (Premium Phase 8a) ----------------------
 

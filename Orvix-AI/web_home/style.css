@@ -354,3 +354,20 @@ body::after{background:radial-gradient(620px 380px at 16% -6%,rgba(0,140,255,.17
 .activity-text{color:#e0effb;line-height:1.5;overflow-wrap:anywhere}
 .activity-time{flex:0 0 auto;font-size:10px;color:#7295b4;font-weight:700}
 @media(max-width:760px){.task-row .task-progress-cell{flex-basis:100%}}
+
+/* ==========================================================================
+   Command Center Phase 3 — Notification Center: the bell badge with
+   the real unread count, and the categorised panel items with
+   timestamps and unread styling. The badge is hidden at 0 by the
+   renderer's .hidden toggle; unread items are brighter than read
+   ones so the read state is visible at a glance.
+   ========================================================================== */
+#notificationsButton{position:relative}
+.notification-badge{position:absolute;top:-5px;right:-5px;min-width:17px;height:17px;padding:0 4px;border-radius:9px;background:#ff4d5e;color:#fff;font-size:9px;font-weight:800;line-height:17px;text-align:center;box-shadow:0 0 9px rgba(255,77,94,.65);pointer-events:none}
+.notifications-actions{display:flex;gap:12px;align-items:center}
+.notification-item.unread{border-color:#00bfff;background:#0a2c4c;box-shadow:inset 3px 0 0 var(--cyan)}
+.notification-head{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:3px}
+.notification-category{font-size:9px;font-weight:800;letter-spacing:1px;color:var(--cyan)}
+.notification-time{font-size:10px;color:#7295b4;font-weight:700}
+.notification-title{display:block;font-size:12px;color:#eaf6ff}
+.notification-text{font-size:11px;line-height:1.5;color:#b7cee3;margin:2px 0 0}

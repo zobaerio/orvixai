@@ -26,12 +26,12 @@
       </nav>
       <div class="top-status"><span class="online-dot"></span><span id="connectionLabel">Not connected</span></div>
       <div class="clock"><strong id="clockTime">--:--:--</strong><small id="clockDate">Loading date…</small></div>
-      <button class="icon-button" id="notificationsButton" aria-label="Notifications">♧</button>
+      <button class="icon-button" id="notificationsButton" aria-label="Notifications">♧<span class="notification-badge hidden" id="notificationBadge">0</span></button>
       <button class="avatar-button" id="profileButton" aria-label="Profile">●</button>
     </header>
 
-    <section class="notifications-panel hidden" id="notificationsPanel" aria-label="Notifications panel">
-      <div class="notifications-heading"><b>Notifications</b><button class="text-button" id="notificationsClose">Close</button></div>
+    <section class="notifications-panel hidden" id="notificationsPanel" aria-label="Notification Center">
+      <div class="notifications-heading"><b>Notification Center</b><span class="notifications-actions"><button class="text-button" id="notificationsMarkRead">Mark all read</button><button class="text-button" id="notificationsClear">Clear</button><button class="text-button" id="notificationsClose">Close</button></span></div>
       <div class="notifications-list" id="notificationsList"><p class="notifications-empty">No notifications yet.</p></div>
     </section>
 

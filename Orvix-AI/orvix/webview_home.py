@@ -228,6 +228,12 @@ MAX_PAYLOAD_TASKS = 10
 # payload only bounds what one push sends to the page.
 MAX_PAYLOAD_ACTIVITY = 10
 
+# How many notification records the payload carries (Command Center
+# Phase 3). The store itself keeps up to 100; one push sends only
+# the latest 20 to the page, plus the store's TOTAL unread count
+# (which may exceed the number of unread items in those 20).
+MAX_PAYLOAD_NOTIFICATIONS = 20
+
 # The Tk activity panel's placeholder line before the first real
 # command: furniture, not an activity event, so it never reaches
 # the web activity panel (which shows its honest empty state
@@ -399,6 +405,74 @@ def _current_operation_payload(records) -> dict | None:
     return None
 
 
+def _notifications_payload(app):
+    """Notification Center block for the payload, or None.
+
+    The source is the app's persistent NotificationStore
+    (``app.notification_store``, Command Center Phase 3): the
+    latest ``MAX_PAYLOAD_NOTIFICATIONS`` records, newest first,
+    each with its category, title, text, epoch ``timestamp``, an
+    HH:MM ``time`` formatted from that timestamp when it is a real
+    number (None otherwise — no time is invented), and its read
+    flag; plus ``unreadCount``, the store's total unread count.
+
+    An app with no store yields None — the block is absent and the
+    page renders its honest empty state. A store that exists but
+    cannot be read also yields None rather than raising or
+    fabricating items. Nothing here ever invents a notification.
+    """
+    store = getattr(app, "notification_store", None)
+    if store is None:
+        return None
+    list_fn = getattr(store, "list", None)
+    if not callable(list_fn):
+        return None
+    try:
+        try:
+            records = list_fn(limit=MAX_PAYLOAD_NOTIFICATIONS)
+        except TypeError:
+            records = list_fn()
+    except Exception:
+        return None
+    if not isinstance(records, list):
+        return None
+    items: list[dict] = []
+    for row in records[:MAX_PAYLOAD_NOTIFICATIONS]:
+        if not isinstance(row, dict):
+            continue
+        timestamp = row.get("timestamp")
+        if isinstance(timestamp, bool) or not isinstance(timestamp, (int, float)):
+            timestamp = None
+        time_text = None
+        if timestamp is not None:
+            try:
+                time_text = format_message_time(
+                    datetime.fromtimestamp(timestamp))
+            except Exception:
+                time_text = None
+        items.append({
+            "id": str(row.get("id") or ""),
+            "category": str(row.get("category") or "system"),
+            "title": str(row.get("title") or ""),
+            "text": str(row.get("text") or ""),
+            "timestamp": timestamp,
+            "time": time_text,
+            "read": bool(row.get("read", False)),
+        })
+    unread = None
+    unread_fn = getattr(store, "unread_count", None)
+    if callable(unread_fn):
+        try:
+            value = unread_fn()
+        except Exception:
+            value = None
+        if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
+            unread = value
+    if unread is None:
+        unread = sum(1 for item in items if not item["read"])
+    return {"items": items, "unreadCount": unread}
+
+
 def _recent_task_records(app) -> list:
     """Newest-first TaskStore records from the app, or [] when the app
     has no readable task store. Any failure yields an empty list: the
@@ -562,6 +636,12 @@ def build_state_payload(app, stats=None) -> dict:
         "controlCenter": _control_center_payload(app, task_records),
         "activity": _activity_payload(app),
         "currentOperation": _current_operation_payload(task_records),
+        # Command Center Phase 3 (additive): the Notification
+        # Center block — latest records + total unread count from
+        # the app's persistent store, or None when the app has no
+        # readable store (the page then shows its honest empty
+        # state instead of inventing notifications).
+        "notifications": _notifications_payload(app),
         "stats": {
             "cpu": stats.cpu_percent,
             "ram": stats.ram_percent,
@@ -733,6 +813,30 @@ class OrvixWebHomeApi:
             # views and this bridge's message buffer — task history
             # (TaskStore) and settings are never touched.
             self._enqueue("_clear_conversation_from_web", ())
+            return {"ok": True}
+        except Exception as exc:
+            return {"ok": False, "error": type(exc).__name__}
+
+    def markNotificationsRead(self):
+        try:
+            # A write, so it follows the same enqueue discipline as
+            # every other mutating bridge method: the store is only
+            # touched on the app's Tk/event thread, never here. The
+            # page's badge and unread styling refresh from the next
+            # state payload, which reflects the store's real state.
+            self._enqueue("_mark_notifications_read_from_web", ())
+            return {"ok": True}
+        except Exception as exc:
+            return {"ok": False, "error": type(exc).__name__}
+
+    def clearNotifications(self):
+        try:
+            # The web page has already asked the user to confirm in
+            # its own UI (the app's usual confirmation pattern), so
+            # the enqueued app method clears without a second
+            # desktop prompt. Only the notification history is
+            # cleared — task history and settings are never touched.
+            self._enqueue("_clear_notifications_from_web", ())
             return {"ok": True}
         except Exception as exc:
             return {"ok": False, "error": type(exc).__name__}
@@ -977,6 +1081,7 @@ __all__ = [
     "ACTION_COMMANDS",
     "MAX_MESSAGE_BUFFER",
     "MAX_PAYLOAD_ACTIVITY",
+    "MAX_PAYLOAD_NOTIFICATIONS",
     "MAX_PAYLOAD_TASKS",
     "OrvixWebHomeApi",
     "WebViewHome",

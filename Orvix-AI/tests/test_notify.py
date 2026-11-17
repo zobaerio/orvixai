@@ -362,5 +362,225 @@ class NotifyWiringStaticTests(unittest.TestCase):
         self.assertNotIn(".after(", self.notify_py)
 
 
+# ---------------------------------------------------------------------------
+# Notification Center store (Command Center Phase 3)
+# ---------------------------------------------------------------------------
+
+from orvix.notify import (  # noqa: E402
+    CATEGORIES,
+    KIND_CATEGORIES,
+    MAX_NOTIFICATIONS,
+    NotificationStore,
+    category_for_kind,
+    record_event,
+)
+
+
+class NotificationStoreTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.path = Path(self.temp.name) / "notifications.json"
+        self.store = NotificationStore(self.path)
+
+    def test_add_and_list_newest_first(self):
+        first = self.store.add("task", "Title one", "text one",
+                               timestamp=1000.0)
+        second = self.store.add("voice", "Title two", "text two",
+                                timestamp=2000.0)
+        records = self.store.list()
+        self.assertEqual([r["id"] for r in records],
+                         [second["id"], first["id"]])
+        self.assertEqual(records[0]["category"], "voice")
+        self.assertEqual(records[0]["timestamp"], 2000.0)
+        self.assertFalse(records[0]["read"])
+        # Returned records are copies: mutating one cannot corrupt
+        # the store.
+        records[0]["read"] = True
+        self.assertEqual(self.store.unread_count(), 2)
+
+    def test_add_rejects_unknown_category_and_empty_record(self):
+        with self.assertRaises(ValueError):
+            self.store.add("bogus", "Title", "text")
+        with self.assertRaises(ValueError):
+            self.store.add("task", "", "")
+        self.assertEqual(self.store.list(), [])
+
+    def test_event_kinds_map_to_categories(self):
+        self.assertEqual(
+            KIND_CATEGORIES,
+            {
+                "task_completed": "task",
+                "task_failed": "task",
+                "endpoint_health": "connection",
+                "wake_activation": "voice",
+            },
+        )
+        self.assertEqual(category_for_kind("task_failed"), "task")
+        self.assertIsNone(category_for_kind("nope"))
+        for category in ("system", "ai", "security"):
+            self.assertIn(category, CATEGORIES)
+
+    def test_add_event_uses_toast_content_and_category(self):
+        record = self.store.add_event(TASK_COMPLETED, detail="Open Notepad")
+        self.assertEqual(record["category"], "task")
+        self.assertEqual(record["title"], "ORVIX — Task completed")
+        self.assertEqual(record["text"], "Open Notepad")
+        record = self.store.add_event(ENDPOINT_HEALTH, detail="reachable")
+        self.assertEqual(record["category"], "connection")
+        record = self.store.add_event(WAKE_ACTIVATION)
+        self.assertEqual(record["category"], "voice")
+        self.assertIsNone(self.store.add_event("task_cancelled"))
+        self.assertEqual(len(self.store.list()), 3)
+
+    def test_bound_enforced_at_max_notifications(self):
+        self.assertEqual(MAX_NOTIFICATIONS, 100)
+        for index in range(MAX_NOTIFICATIONS + 25):
+            self.store.add("system", f"Title {index}", "text",
+                           timestamp=float(index))
+        records = self.store.list()
+        self.assertEqual(len(records), MAX_NOTIFICATIONS)
+        self.assertEqual(records[0]["title"], "Title 124")
+        self.assertEqual(records[-1]["title"], "Title 25")
+        on_disk = json.loads(self.path.read_text(encoding="utf-8"))
+        self.assertEqual(len(on_disk), MAX_NOTIFICATIONS)
+
+    def test_persistence_round_trip(self):
+        self.store.add_event(TASK_FAILED, detail="boom")
+        self.store.add("security", "Saved title", "saved text",
+                       timestamp=1234.5)
+        self.store.mark_all_read()
+        reopened = NotificationStore(self.path)
+        records = reopened.list()
+        self.assertEqual(len(records), 2)
+        self.assertEqual(records[0]["title"], "Saved title")
+        self.assertEqual(records[0]["timestamp"], 1234.5)
+        self.assertTrue(all(r["read"] for r in records))
+        self.assertEqual(reopened.unread_count(), 0)
+
+    def test_corrupt_file_starts_empty_and_recovers(self):
+        self.path.write_text("{not json", encoding="utf-8")
+        store = NotificationStore(self.path)
+        self.assertEqual(store.list(), [])
+        store.add_event(TASK_COMPLETED, detail="done")
+        self.assertEqual(len(NotificationStore(self.path).list()), 1)
+
+    def test_non_list_file_and_bad_records_are_tolerated(self):
+        self.path.write_text(json.dumps({"nope": True}), encoding="utf-8")
+        self.assertEqual(NotificationStore(self.path).list(), [])
+        self.path.write_text(json.dumps([
+            {"id": "ok1", "category": "task", "title": "Kept",
+             "text": "yes", "timestamp": 5, "read": True},
+            {"category": "task", "title": "no id"},
+            {"id": "bad", "category": "bogus", "title": "bad category"},
+            "not a dict",
+        ]), encoding="utf-8")
+        records = NotificationStore(self.path).list()
+        self.assertEqual(len(records), 1)
+        self.assertEqual(records[0]["title"], "Kept")
+        self.assertEqual(records[0]["timestamp"], 5.0)
+        self.assertTrue(records[0]["read"])
+
+    def test_unread_count_mark_all_read_and_mark_by_ids(self):
+        one = self.store.add("task", "One", "a")
+        two = self.store.add("task", "Two", "b")
+        three = self.store.add("task", "Three", "c")
+        self.assertEqual(self.store.unread_count(), 3)
+        self.assertEqual(self.store.mark_read([one["id"], "missing"]), 1)
+        self.assertEqual(self.store.unread_count(), 2)
+        # Already-read ids do not count again.
+        self.assertEqual(self.store.mark_read([one["id"]]), 0)
+        self.assertEqual(self.store.mark_all_read(), 2)
+        self.assertEqual(self.store.unread_count(), 0)
+        self.assertEqual(self.store.mark_all_read(), 0)
+        by_id = {r["id"]: r["read"] for r in self.store.list()}
+        self.assertTrue(all(by_id.values()))
+        self.assertEqual({two["id"], three["id"]} <= set(by_id), True)
+
+    def test_clear_empties_and_persists(self):
+        self.store.add_event(TASK_COMPLETED, detail="done")
+        self.store.clear()
+        self.assertEqual(self.store.list(), [])
+        self.assertEqual(self.store.unread_count(), 0)
+        self.assertEqual(NotificationStore(self.path).list(), [])
+        # Clearing an already-empty store is a harmless no-op.
+        self.store.clear()
+        self.assertEqual(self.store.list(), [])
+
+    def test_list_limit(self):
+        for index in range(5):
+            self.store.add("task", f"T{index}", "x", timestamp=float(index))
+        self.assertEqual(len(self.store.list(limit=2)), 2)
+        self.assertEqual(self.store.list(limit=0), [])
+        self.assertEqual(len(self.store.list(limit=999)), 5)
+
+
+class RecordEventTests(unittest.TestCase):
+    """record_event shares notify_event's toggle decision exactly,
+    but needs no tray: the centre records foreground events too."""
+
+    def setUp(self) -> None:
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.store = NotificationStore(
+            Path(self.temp.name) / "notifications.json")
+
+    def test_records_when_toggle_on_without_any_tray(self):
+        record = record_event(self.store, ALL_ON, TASK_COMPLETED,
+                              detail="done")
+        self.assertIsNotNone(record)
+        self.assertEqual(record["category"], "task")
+        self.assertEqual(self.store.unread_count(), 1)
+
+    def test_toggled_off_kind_is_not_recorded(self):
+        config = dict(ALL_ON, notify_task_failed=False)
+        self.assertIsNone(record_event(
+            self.store, config, TASK_FAILED, detail="boom"))
+        self.assertEqual(self.store.list(), [])
+        # Other kinds still record under the same settings.
+        self.assertIsNotNone(record_event(
+            self.store, config, TASK_COMPLETED, detail="done"))
+
+    def test_unknown_kind_and_missing_store_record_nothing(self):
+        self.assertIsNone(record_event(self.store, ALL_ON, "nope"))
+        self.assertIsNone(record_event(None, ALL_ON, TASK_COMPLETED))
+        self.assertIsNone(record_event(object(), ALL_ON, TASK_COMPLETED))
+        self.assertEqual(self.store.list(), [])
+
+    def test_non_dict_settings_record_nothing(self):
+        self.assertIsNone(record_event(self.store, None, TASK_COMPLETED))
+        self.assertEqual(self.store.list(), [])
+
+
+class NotificationCenterWiringStaticTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.app_py = (APP_DIR / "app.py").read_text(encoding="utf-8")
+
+    def test_app_creates_store_and_records_in_notify(self):
+        self.assertIn(
+            "from orvix.notify import NotificationStore, record_event",
+            self.app_py)
+        self.assertIn("self.notification_store = NotificationStore()",
+                      self.app_py)
+        start = self.app_py.index("    def _notify(self, kind: str")
+        end = self.app_py.index(
+            "    # -- Notification Center (Command Center Phase 3)",
+            start)
+        body = self.app_py[start:end]
+        self.assertIn("record_event(", body)
+        self.assertIn("notify_event(", body)
+
+    def test_app_bridge_handlers_and_tk_window_exist(self):
+        self.assertIn("def _mark_notifications_read_from_web(self)",
+                      self.app_py)
+        self.assertIn("def _clear_notifications_from_web(self)",
+                      self.app_py)
+        self.assertIn("def _open_notifications(self)", self.app_py)
+        self.assertIn('text="♧  NOTIFICATIONS"', self.app_py)
+        self.assertIn("store.mark_all_read()", self.app_py)
+        self.assertIn("store.clear()", self.app_py)
+
+
 if __name__ == "__main__":
     unittest.main()
