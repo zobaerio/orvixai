@@ -14,6 +14,7 @@ from __future__ import annotations
 import os
 import platform
 import shutil
+import threading
 import time
 from collections import deque
 from dataclasses import dataclass, field
@@ -35,6 +36,13 @@ GAUGE_ORANGE = "#fb923c"
 GAUGE_RED = "#f87171"
 GAUGE_TRACK = "#1c2d46"
 
+# Caps for the Command Center Phase 1 metric expansion: the drive
+# list and the top-process snapshot stay small enough to sample on
+# the state-push cadence without turning the home page into a full
+# task manager.
+MAX_DRIVES = 10
+MAX_TOP_PROCESSES = 5
+
 
 def clamp_percent(value: object) -> Optional[float]:
     """Coerce a raw counter to a 0..100 float, or None when unreadable."""
@@ -45,6 +53,38 @@ def clamp_percent(value: object) -> Optional[float]:
     if number != number or number in (float("inf"), float("-inf")):
         return None
     return max(0.0, min(100.0, number))
+
+
+def _optional_float(value: object) -> Optional[float]:
+    """Coerce a raw counter to a finite float, or None when unreadable.
+
+    Unlike :func:`clamp_percent` this imposes no 0..100 range: process
+    CPU and byte rates legitimately exceed 100."""
+    try:
+        number = float(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return None
+    if number != number or number in (float("inf"), float("-inf")):
+        return None
+    return number
+
+
+def format_bytes_per_second(value: object) -> str:
+    """'1.5 MB/s' for a real rate, 'N/A' when no rate was measured.
+
+    Rates are bytes per second, scaled by 1024. A first sample (no
+    previous counter to diff against) is None and renders 'N/A' —
+    never a fabricated zero-rate reading presented as measured."""
+    rate = _optional_float(value)
+    if rate is None or rate < 0:
+        return NOT_AVAILABLE
+    if rate < 1024:
+        return f"{rate:.0f} B/s"
+    if rate < 1024 ** 2:
+        return f"{rate / 1024:.1f} KB/s"
+    if rate < 1024 ** 3:
+        return f"{rate / 1024 ** 2:.1f} MB/s"
+    return f"{rate / 1024 ** 3:.1f} GB/s"
 
 
 def gauge_extent_deg(value: object) -> float:
@@ -164,7 +204,32 @@ class SystemStats:
 
     Every field is None when its source could not be read in the
     current environment (for example psutil missing, or uptime on a
-    platform that does not expose a boot time)."""
+    platform that does not expose a boot time).
+
+    The Phase 1 fields are all optional with empty/None defaults so
+    existing constructions with the original seven fields keep
+    working unchanged:
+
+    - ``network_upload_bps`` / ``network_download_bps`` and
+      ``disk_read_bps`` / ``disk_write_bps`` are byte-per-second rates
+      computed from the delta between successive
+      :func:`collect_system_stats` calls; they are None on the first
+      call (no previous sample exists yet).
+    - ``drives`` is a tuple of ``{"mount", "percent"}`` dicts, one per
+      readable mounted drive, capped at :data:`MAX_DRIVES`.
+    - ``battery`` is ``{"percent", "plugged"}`` or None when the
+      machine has no battery (desktops) — an honest N/A, never a
+      fabricated full battery.
+    - ``top_processes`` is a tuple of
+      ``{"name", "cpu_percent", "memory_percent"}`` dicts for the
+      heaviest processes, capped at :data:`MAX_TOP_PROCESSES`.
+    - ``own_cpu_percent`` / ``own_memory_percent`` describe this app
+      process itself.
+    - ``gpu_percent`` / ``temperature_c`` are always None on this
+      stack: psutil exposes no GPU counter and no temperature source
+      on Windows, so the UI renders them as an explicit "N/A" instead
+      of a vendor probe or an invented value.
+    """
 
     cpu_percent: Optional[float]
     ram_percent: Optional[float]
@@ -173,6 +238,17 @@ class SystemStats:
     os_build: str
     machine: str
     uptime_seconds: Optional[float]
+    network_upload_bps: Optional[float] = None
+    network_download_bps: Optional[float] = None
+    disk_read_bps: Optional[float] = None
+    disk_write_bps: Optional[float] = None
+    drives: tuple = ()
+    battery: Optional[dict] = None
+    top_processes: tuple = ()
+    own_cpu_percent: Optional[float] = None
+    own_memory_percent: Optional[float] = None
+    gpu_percent: Optional[float] = None
+    temperature_c: Optional[float] = None
 
     @property
     def any_gauge(self) -> bool:
@@ -180,12 +256,218 @@ class SystemStats:
                    (self.cpu_percent, self.ram_percent, self.storage_percent))
 
 
-def collect_system_stats() -> SystemStats:
+# Previous IO counter sample for the two-sample rate computation.
+# ``collect_system_stats`` is called repeatedly by the app (the Tk
+# gauge refresh and the WebView state push), so the baseline lives in
+# module state and each call rates against the previous call.
+_prev_io_sample: Optional[dict] = None
+_prev_io_lock = threading.Lock()
+
+
+def _reset_io_baseline() -> None:
+    """Drop the stored IO baseline (the next collect reports None
+    rates again). Used by tests for isolation; the app never needs
+    it because its collect calls run for the process lifetime."""
+    global _prev_io_sample
+    with _prev_io_lock:
+        _prev_io_sample = None
+
+
+def _update_io_rates(net_counters, disk_counters, now: float):
+    """Rate the IO counters against the previous sample.
+
+    Returns ``(upload_bps, download_bps, disk_read_bps,
+    disk_write_bps)`` — each None when it cannot be rated (first
+    sample, missing counter, non-positive elapsed time, or a counter
+    that went backwards, which means it reset). The current counters
+    become the new baseline either way, so a reset costs exactly one
+    unreadable interval instead of a negative or absurd rate."""
+    global _prev_io_sample
+    current = {
+        "t": _optional_float(now),
+        "net_sent": _optional_float(
+            getattr(net_counters, "bytes_sent", None)),
+        "net_recv": _optional_float(
+            getattr(net_counters, "bytes_recv", None)),
+        "disk_read": _optional_float(
+            getattr(disk_counters, "read_bytes", None)),
+        "disk_write": _optional_float(
+            getattr(disk_counters, "write_bytes", None)),
+    }
+    with _prev_io_lock:
+        previous = _prev_io_sample
+        _prev_io_sample = current
+    if previous is None:
+        return (None, None, None, None)
+    elapsed = None
+    if current["t"] is not None and previous.get("t") is not None:
+        elapsed = current["t"] - previous["t"]
+    if elapsed is None or elapsed <= 0:
+        return (None, None, None, None)
+
+    def _rate(key: str) -> Optional[float]:
+        cur = current.get(key)
+        prev = previous.get(key)
+        if cur is None or prev is None or cur < prev:
+            return None
+        return (cur - prev) / elapsed
+
+    return (_rate("net_sent"), _rate("net_recv"),
+            _rate("disk_read"), _rate("disk_write"))
+
+
+def _collect_drives(psutil_module) -> tuple:
+    """Per-drive usage from ``disk_partitions`` + ``disk_usage``.
+
+    A drive whose usage cannot be read is skipped (never reported
+    with an invented percent); the list is capped at
+    :data:`MAX_DRIVES`."""
+    try:
+        partitions = psutil_module.disk_partitions()
+    except Exception:
+        return ()
+    drives = []
+    for partition in partitions or []:
+        if len(drives) >= MAX_DRIVES:
+            break
+        mount = (getattr(partition, "mountpoint", None)
+                 or getattr(partition, "device", None))
+        if not mount:
+            continue
+        try:
+            usage = psutil_module.disk_usage(mount)
+        except Exception:
+            continue
+        percent = clamp_percent(getattr(usage, "percent", None))
+        if percent is None:
+            total = _optional_float(getattr(usage, "total", None))
+            used = _optional_float(getattr(usage, "used", None))
+            if total and used is not None:
+                percent = clamp_percent(used * 100.0 / total)
+        if percent is None:
+            continue
+        drives.append({"mount": str(mount), "percent": percent})
+    return tuple(drives)
+
+
+def _collect_battery(psutil_module) -> Optional[dict]:
+    """Battery reading as ``{"percent", "plugged"}``, or None.
+
+    ``sensors_battery`` returns None on machines without a battery
+    (desktops) and does not exist at all on some platforms — both are
+    an honest None here, which the UI renders as "N/A"."""
+    reader = getattr(psutil_module, "sensors_battery", None)
+    if not callable(reader):
+        return None
+    try:
+        reading = reader()
+    except Exception:
+        return None
+    if reading is None:
+        return None
+    percent = clamp_percent(getattr(reading, "percent", None))
+    if percent is None:
+        return None
+    plugged_raw = getattr(reading, "power_plugged", None)
+    plugged = bool(plugged_raw) if plugged_raw is not None else None
+    return {"percent": percent, "plugged": plugged}
+
+
+def _process_field(proc, info, name: str):
+    """One field of a process snapshot, from its ``info`` dict when
+    ``process_iter`` supplied one, else from the process method."""
+    if isinstance(info, dict) and name in info:
+        return info[name]
+    member = getattr(proc, name, None)
+    return member() if callable(member) else member
+
+
+def _collect_top_processes(psutil_module) -> tuple:
+    """Top processes by memory: ``{"name", "cpu_percent",
+    "memory_percent"}`` dicts, heaviest first, capped at
+    :data:`MAX_TOP_PROCESSES`.
+
+    Each process is read inside its own guard: a process that exits
+    or denies access mid-scan (NoSuchProcess / AccessDenied /
+    ZombieProcess — all Exception subclasses from psutil) is skipped,
+    never fatal and never reported with invented numbers."""
+    try:
+        iterator = psutil_module.process_iter()
+    except Exception:
+        return ()
+    entries = []
+    for proc in iterator or []:
+        try:
+            info = getattr(proc, "info", None)
+            name = _process_field(proc, info, "name")
+            if not name:
+                continue
+            cpu = _optional_float(_process_field(proc, info, "cpu_percent"))
+            if cpu is not None:
+                cpu = max(0.0, cpu)
+            memory = clamp_percent(
+                _process_field(proc, info, "memory_percent"))
+            entries.append({
+                "name": str(name),
+                "cpu_percent": cpu,
+                "memory_percent": memory,
+            })
+        except Exception:
+            continue
+    entries.sort(
+        key=lambda entry: (
+            entry["memory_percent"] if entry["memory_percent"] is not None
+            else -1.0,
+            entry["cpu_percent"] if entry["cpu_percent"] is not None
+            else -1.0),
+        reverse=True)
+    return tuple(entries[:MAX_TOP_PROCESSES])
+
+
+def _collect_own_process(psutil_module):
+    """This app process's own ``(cpu_percent, memory_percent)``.
+
+    Each counter is guarded separately so one unreadable counter does
+    not discard the other; both are None when the process handle
+    itself cannot be obtained."""
+    try:
+        proc = psutil_module.Process()
+    except Exception:
+        return (None, None)
+    cpu: Optional[float] = None
+    memory: Optional[float] = None
+    try:
+        cpu = _optional_float(proc.cpu_percent())
+        if cpu is not None:
+            cpu = max(0.0, cpu)
+    except Exception:
+        cpu = None
+    try:
+        memory = clamp_percent(proc.memory_percent())
+    except Exception:
+        memory = None
+    return (cpu, memory)
+
+
+def collect_system_stats(clock=None) -> SystemStats:
     """Read the live counters once. Never raises: any source that
-    fails simply leaves its field as None / dash."""
+    fails simply leaves its field as None / dash.
+
+    ``clock`` is the monotonic time source for the IO rate deltas
+    (defaults to ``time.monotonic``); tests inject a fake clock so a
+    two-sample rate can be asserted exactly."""
     cpu: Optional[float] = None
     ram: Optional[float] = None
     uptime: Optional[float] = None
+    network_upload: Optional[float] = None
+    network_download: Optional[float] = None
+    disk_read: Optional[float] = None
+    disk_write: Optional[float] = None
+    drives: tuple = ()
+    battery: Optional[dict] = None
+    top_processes: tuple = ()
+    own_cpu: Optional[float] = None
+    own_memory: Optional[float] = None
     try:
         import psutil
         cpu = clamp_percent(psutil.cpu_percent(interval=None))
@@ -194,6 +476,23 @@ def collect_system_stats() -> SystemStats:
             uptime = max(0.0, time.time() - float(psutil.boot_time()))
         except Exception:
             uptime = None
+        # IO rates: two-sample delta against the previous collect.
+        try:
+            net_counters = psutil.net_io_counters()
+        except Exception:
+            net_counters = None
+        try:
+            disk_counters = psutil.disk_io_counters()
+        except Exception:
+            disk_counters = None
+        now = (clock() if callable(clock) else time.monotonic())
+        (network_upload, network_download,
+         disk_read, disk_write) = _update_io_rates(
+             net_counters, disk_counters, now)
+        drives = _collect_drives(psutil)
+        battery = _collect_battery(psutil)
+        top_processes = _collect_top_processes(psutil)
+        own_cpu, own_memory = _collect_own_process(psutil)
     except Exception:
         cpu = ram = None
 
@@ -222,6 +521,19 @@ def collect_system_stats() -> SystemStats:
         os_build=" ".join(str(platform.version() or "").split()) or DASH,
         machine=" ".join(str(platform.machine() or "").split()) or DASH,
         uptime_seconds=uptime,
+        network_upload_bps=network_upload,
+        network_download_bps=network_download,
+        disk_read_bps=disk_read,
+        disk_write_bps=disk_write,
+        drives=drives,
+        battery=battery,
+        top_processes=top_processes,
+        own_cpu_percent=own_cpu,
+        own_memory_percent=own_memory,
+        # No honest source on this stack (see SystemStats docstring):
+        # explicit None so the UI renders "N/A".
+        gpu_percent=None,
+        temperature_c=None,
     )
 
 
@@ -350,7 +662,9 @@ def performance_caption(history: PerfHistory) -> str:
 __all__ = [
     "DASH", "NOT_AVAILABLE", "GAUGE_START_DEG", "GAUGE_SWEEP_DEG",
     "GAUGE_CYAN", "GAUGE_GREEN", "GAUGE_BLUE", "GAUGE_ORANGE", "GAUGE_RED",
-    "GAUGE_TRACK", "clamp_percent", "gauge_extent_deg", "format_percent",
+    "GAUGE_TRACK", "MAX_DRIVES", "MAX_TOP_PROCESSES",
+    "clamp_percent", "gauge_extent_deg", "format_percent",
+    "format_bytes_per_second",
     "gauge_color", "format_uptime", "format_os_name", "PerfHistory",
     "SystemStats", "collect_system_stats", "ModelStatusLine",
     "model_status_lines", "QuickTile", "quick_action_tiles",

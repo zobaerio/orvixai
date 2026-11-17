@@ -352,6 +352,78 @@ function setRing(stat, value) {
 }
 
 // ---------------------------------------------------------------------------
+// System Overview detail rows (Command Center Phase 1): network and
+// disk-activity rates, battery, per-drive usage, this app's own usage,
+// and the GPU / temperature rows. Every value comes from the payload's
+// stats block; a null (unreadable, no battery, no rate sample yet, or
+// no source on this stack) renders as "N/A" — never an invented
+// number. Standalone (no bridge) the rows keep the same "N/A"
+// presentation as the rest of the panel.
+// ---------------------------------------------------------------------------
+function fmtRate(value) {
+  if (value == null || typeof value !== "number" || !isFinite(value) || value < 0) return "N/A";
+  if (value < 1024) return Math.round(value) + " B/s";
+  if (value < 1024 * 1024) return (value / 1024).toFixed(1) + " KB/s";
+  if (value < 1024 * 1024 * 1024) return (value / (1024 * 1024)).toFixed(1) + " MB/s";
+  return (value / (1024 * 1024 * 1024)).toFixed(1) + " GB/s";
+}
+function fmtBattery(battery) {
+  if (!battery || battery.percent == null) return "N/A";
+  const base = Math.round(battery.percent) + "%";
+  if (battery.plugged === true) return base + " · Plugged in";
+  if (battery.plugged === false) return base + " · On battery";
+  return base;
+}
+function setDetailText(id, text) {
+  const el = document.getElementById(id);
+  if (el) el.textContent = text;
+}
+function renderDrives(drives) {
+  const list = $("#driveList");
+  if (!list) return;
+  list.replaceChildren();
+  const rows = Array.isArray(drives) ? drives.filter((d) => d && d.mount) : [];
+  if (!rows.length) {
+    const empty = document.createElement("p");
+    empty.className = "drive-empty";
+    empty.textContent = "N/A";
+    list.appendChild(empty);
+    return;
+  }
+  rows.forEach((drive) => {
+    const row = document.createElement("div");
+    row.className = "drive-row";
+    const mount = document.createElement("span");
+    mount.textContent = String(drive.mount);
+    const percent = document.createElement("b");
+    percent.textContent = drive.percent == null ? "N/A" : Math.round(drive.percent) + "%";
+    row.append(mount, percent);
+    list.appendChild(row);
+  });
+}
+function updateSystemDetails(stats) {
+  const s = stats || {};
+  setDetailText("networkDown", fmtRate(s.networkDownloadBps));
+  setDetailText("networkUp", fmtRate(s.networkUploadBps));
+  setDetailText("diskRead", fmtRate(s.diskReadBps));
+  setDetailText("diskWrite", fmtRate(s.diskWriteBps));
+  setDetailText("batteryValue", fmtBattery(s.battery));
+  // GPU and temperature have no source on this stack: the payload
+  // carries explicit nulls for them, so these rows stay "N/A" unless
+  // a real value ever arrives.
+  setDetailText("gpuValue", s.gpuPercent == null ? "N/A" : Math.round(s.gpuPercent) + "%");
+  setDetailText("temperatureValue", s.temperatureC == null ? "N/A" : Math.round(s.temperatureC) + " °C");
+  if (s.ownCpuPercent == null && s.ownMemoryPercent == null) {
+    setDetailText("ownProcessValue", "N/A");
+  } else {
+    const ownPct = (v) => (v == null ? "N/A" : Math.round(v) + "%");
+    setDetailText("ownProcessValue",
+      "CPU " + ownPct(s.ownCpuPercent) + " · RAM " + ownPct(s.ownMemoryPercent));
+  }
+  renderDrives(s.drives);
+}
+
+// ---------------------------------------------------------------------------
 // Python -> JS pushes. State shape (all fields may be missing/null):
 // { version, stats:{cpu, ram, storage, osName, machine, uptime},
 //   model:{name, endpoint, statusLines:[{label, value, state}]},
@@ -367,6 +439,7 @@ window.orvixPushState = function (state) {
 
   const stats = state.stats || {};
   setRing("cpu", stats.cpu); setRing("ram", stats.ram); setRing("storage", stats.storage);
+  updateSystemDetails(stats);
 
   const osInfo = $("#osInfo");
   if (osInfo) {
@@ -766,6 +839,7 @@ setConnectedUI(false);
 updateChatPill(null);
 updateTypingIndicator(null);
 updateCoreStatus(null);
+updateSystemDetails(null);
 renderTasks();
 renderPerf();
 tryConnect();

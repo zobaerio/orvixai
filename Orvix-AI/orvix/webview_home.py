@@ -275,6 +275,55 @@ def _endpoint_state(lines) -> str:
     return "not-checked"
 
 
+def _drives_payload(stats) -> list:
+    """Per-drive usage for the payload: ``[{"mount", "percent"}]``.
+
+    Read defensively with ``getattr`` so a stats object from before
+    the Phase 1 fields existed (or a minimal stand-in) yields an
+    empty list instead of raising; malformed entries are skipped."""
+    drives = getattr(stats, "drives", None) or ()
+    result = []
+    for entry in drives:
+        if not isinstance(entry, dict):
+            continue
+        mount = entry.get("mount")
+        if not mount:
+            continue
+        result.append({"mount": str(mount), "percent": entry.get("percent")})
+    return result
+
+
+def _battery_payload(stats):
+    """Battery for the payload: ``{"percent", "plugged"}`` or None.
+
+    None is the honest desktop case (no battery) and passes through
+    untouched so the page renders "N/A"."""
+    battery = getattr(stats, "battery", None)
+    if not isinstance(battery, dict):
+        return None
+    return {"percent": battery.get("percent"),
+            "plugged": battery.get("plugged")}
+
+
+def _top_processes_payload(stats) -> list:
+    """Top-process snapshot for the payload, with camelCase keys:
+    ``[{"name", "cpuPercent", "memoryPercent"}]``."""
+    processes = getattr(stats, "top_processes", None) or ()
+    result = []
+    for entry in processes:
+        if not isinstance(entry, dict):
+            continue
+        name = entry.get("name")
+        if not name:
+            continue
+        result.append({
+            "name": str(name),
+            "cpuPercent": entry.get("cpu_percent"),
+            "memoryPercent": entry.get("memory_percent"),
+        })
+    return result
+
+
 def build_state_payload(app, stats=None) -> dict:
     """JSON-serializable snapshot of real app state for the web page.
 
@@ -323,6 +372,23 @@ def build_state_payload(app, stats=None) -> dict:
             "machine": stats.machine,
             "uptimeSeconds": stats.uptime_seconds,
             "uptime": format_uptime(stats.uptime_seconds),
+            # Command Center Phase 1 (additive — every key above is
+            # unchanged): IO rates are bytes/sec from the collector's
+            # two-sample delta (None on the first sample), battery is
+            # {"percent", "plugged"} or None on machines without one,
+            # and gpu / temperature are explicit None on this stack
+            # so the page renders an honest "N/A" for them.
+            "networkUploadBps": getattr(stats, "network_upload_bps", None),
+            "networkDownloadBps": getattr(stats, "network_download_bps", None),
+            "diskReadBps": getattr(stats, "disk_read_bps", None),
+            "diskWriteBps": getattr(stats, "disk_write_bps", None),
+            "drives": _drives_payload(stats),
+            "battery": _battery_payload(stats),
+            "topProcesses": _top_processes_payload(stats),
+            "ownCpuPercent": getattr(stats, "own_cpu_percent", None),
+            "ownMemoryPercent": getattr(stats, "own_memory_percent", None),
+            "gpuPercent": getattr(stats, "gpu_percent", None),
+            "temperatureC": getattr(stats, "temperature_c", None),
         },
         "core": {"mode": core_mode, "state": core_state_key(core_mode)},
         "character": str(selected) if selected is not None else "luna",

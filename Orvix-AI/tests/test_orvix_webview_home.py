@@ -237,6 +237,86 @@ class PayloadTests(unittest.TestCase):
         self.assertTrue(payload["wakeEnabled"])
 
 
+class PayloadPhase1Tests(unittest.TestCase):
+    """Command Center Phase 1: the payload's stats block carries the
+    expanded metrics additively — every pre-Phase-1 key is unchanged,
+    and unavailable metrics stay None / empty so the page renders an
+    honest "N/A" for them."""
+
+    def setUp(self):
+        self.app = FakeApp()
+
+    def test_phase1_metrics_in_payload(self):
+        stats = SystemStats(
+            10.0, 20.0, 30.0, "Windows 11", "build", "AMD64", 60,
+            network_upload_bps=1024.0, network_download_bps=2048.0,
+            disk_read_bps=512.0, disk_write_bps=256.0,
+            drives=({"mount": "C:\\", "percent": 61.0},
+                    {"mount": "D:\\", "percent": 20.0}),
+            battery={"percent": 82.0, "plugged": True},
+            top_processes=({"name": "chrome", "cpu_percent": 12.0,
+                            "memory_percent": 8.5},),
+            own_cpu_percent=3.0, own_memory_percent=1.5)
+        payload = build_state_payload(self.app, stats=stats)
+        json.dumps(payload)  # must stay JSON-serializable
+        block = payload["stats"]
+        # Existing keys are untouched.
+        self.assertEqual(block["cpu"], 10.0)
+        self.assertEqual(block["ram"], 20.0)
+        self.assertEqual(block["storage"], 30.0)
+        self.assertEqual(block["osName"], "Windows 11")
+        # New keys carry the real readings.
+        self.assertEqual(block["networkUploadBps"], 1024.0)
+        self.assertEqual(block["networkDownloadBps"], 2048.0)
+        self.assertEqual(block["diskReadBps"], 512.0)
+        self.assertEqual(block["diskWriteBps"], 256.0)
+        self.assertEqual(block["drives"],
+                         [{"mount": "C:\\", "percent": 61.0},
+                          {"mount": "D:\\", "percent": 20.0}])
+        self.assertEqual(block["battery"],
+                         {"percent": 82.0, "plugged": True})
+        self.assertEqual(block["topProcesses"],
+                         [{"name": "chrome", "cpuPercent": 12.0,
+                           "memoryPercent": 8.5}])
+        self.assertEqual(block["ownCpuPercent"], 3.0)
+        self.assertEqual(block["ownMemoryPercent"], 1.5)
+        # No honest source on this stack: explicit None, not a value.
+        self.assertIsNone(block["gpuPercent"])
+        self.assertIsNone(block["temperatureC"])
+
+    def test_phase1_defaults_are_honest_none_and_empty(self):
+        stats = SystemStats(None, None, None, "—", "—", "—", None)
+        payload = build_state_payload(self.app, stats=stats)
+        json.dumps(payload)
+        block = payload["stats"]
+        self.assertIsNone(block["networkUploadBps"])
+        self.assertIsNone(block["networkDownloadBps"])
+        self.assertIsNone(block["diskReadBps"])
+        self.assertIsNone(block["diskWriteBps"])
+        self.assertEqual(block["drives"], [])
+        self.assertIsNone(block["battery"])
+        self.assertEqual(block["topProcesses"], [])
+        self.assertIsNone(block["ownCpuPercent"])
+        self.assertIsNone(block["ownMemoryPercent"])
+        self.assertIsNone(block["gpuPercent"])
+        self.assertIsNone(block["temperatureC"])
+
+    def test_payload_tolerates_stats_without_phase1_fields(self):
+        # A stats stand-in carrying only the original seven fields
+        # must still produce the full Phase 1 key set (all None /
+        # empty) instead of raising on the missing attributes.
+        import types
+        stats = types.SimpleNamespace(
+            cpu_percent=1.0, ram_percent=2.0, storage_percent=3.0,
+            os_name="—", os_build="—", machine="—", uptime_seconds=None)
+        payload = build_state_payload(self.app, stats=stats)
+        json.dumps(payload)
+        self.assertIsNone(payload["stats"]["networkUploadBps"])
+        self.assertEqual(payload["stats"]["drives"], [])
+        self.assertIsNone(payload["stats"]["battery"])
+        self.assertEqual(payload["stats"]["topProcesses"], [])
+
+
 class FakeTaskStore:
     """Minimal stand-in with TaskStore.list_tasks' newest-first shape."""
 
@@ -728,6 +808,34 @@ class StaticWebHomeTests(unittest.TestCase):
         self.assertIn("ram-bar", self.app_js)
         self.assertIn(".cpu-bar", self.style_css)
         self.assertIn(".ram-bar", self.style_css)
+
+    def test_system_overview_phase1_rows(self):
+        # Command Center Phase 1: the System Overview panel gains
+        # network, disk-activity, battery, GPU and temperature rows
+        # plus a per-drive list. GPU/temperature start as an explicit
+        # "N/A" in the markup itself, and the renderer formats rates
+        # from the payload (null -> "N/A") instead of inventing any.
+        for element_id in ("networkDown", "networkUp", "diskRead",
+                           "diskWrite", "batteryValue", "gpuValue",
+                           "temperatureValue", "ownProcessValue",
+                           "driveList", "systemDetails"):
+            self.assertIn(f'id="{element_id}"', self.index_html)
+        self.assertIn('id="gpuValue">N/A', self.index_html)
+        self.assertIn('id="temperatureValue">N/A', self.index_html)
+        self.assertIn('id="batteryValue">N/A', self.index_html)
+        self.assertIn("updateSystemDetails", self.app_js)
+        self.assertIn("updateSystemDetails(stats)", self.app_js)
+        self.assertIn("fmtRate", self.app_js)
+        self.assertIn("fmtBattery", self.app_js)
+        self.assertIn("networkUploadBps", self.app_js)
+        self.assertIn("networkDownloadBps", self.app_js)
+        self.assertIn("diskReadBps", self.app_js)
+        self.assertIn("gpuPercent", self.app_js)
+        self.assertIn("temperatureC", self.app_js)
+        self.assertIn("renderDrives", self.app_js)
+        self.assertIn(".system-details", self.style_css)
+        self.assertIn(".detail-row", self.style_css)
+        self.assertIn(".drive-row", self.style_css)
 
     def test_responsive_breakpoints_rearrange_layout(self):
         # Phase 11 (§9): dedicated breakpoints rearrange the rails —
