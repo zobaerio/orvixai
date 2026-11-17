@@ -21,6 +21,7 @@
         <button class="nav-item" data-tab="tools">▦ <span>Tools</span></button>
         <button class="nav-item" data-tab="tasks">▤ <span>Tasks</span></button>
         <button class="nav-item" data-tab="voice">🎙 <span>Voice</span></button>
+        <button class="nav-item" data-tab="memory">◈ <span>Memory</span></button>
         <button class="nav-item" data-tab="settings">⚙ <span>Settings</span></button>
         <button class="nav-item" data-tab="about">ⓘ <span>About</span></button>
       </nav>
@@ -193,6 +194,29 @@
       <p>Recent tasks from the ORVIX desktop app, newest first. This view is read-only — run, cancel and full history live in the desktop console's Task History.</p>
       <div class="tasks-list" id="tasksList"></div>
       <p class="tasks-empty" id="tasksEmpty">No tasks yet</p>
+    </section>
+
+    <section class="secondary-view panel hidden" id="memoryView">
+      <div class="panel-heading"><h2>Memory Center</h2><button class="text-button" id="memoryBackHome">← Back to Home</button></div>
+      <p>What ORVIX was explicitly asked to remember, stored locally in the desktop app. Entries are only ever added by an explicit remember — you can search, delete individual entries, or clear everything here.</p>
+      <div class="memory-search-row">
+        <input id="memorySearchInput" type="text" placeholder="Search memory…" autocomplete="off" />
+        <button class="memory-search-button" id="memorySearchButton">Search</button>
+        <button class="memory-search-clear" id="memorySearchClear">Clear search</button>
+      </div>
+      <p class="memory-summary" id="memorySummary"></p>
+      <div class="memory-list" id="memoryList"></div>
+      <p class="memory-empty" id="memoryEmpty">No memories saved yet</p>
+      <div class="memory-clear-row">
+        <button class="memory-clear-button" id="memoryClearButton">Clear all memory</button>
+      </div>
+      <div class="memory-clear-confirm hidden" id="memoryClearConfirm">
+        <p>Clear ALL memory entries? This removes every preference, fact, strategy and note shown here. Task history and settings are NOT deleted.</p>
+        <div class="memory-clear-confirm-actions">
+          <button class="memory-clear-confirm-button" id="memoryClearConfirmButton">Yes, clear all</button>
+          <button class="memory-clear-cancel-button" id="memoryClearCancel">Cancel</button>
+        </div>
+      </div>
     </section>
 
     <section class="secondary-view panel hidden" id="secondaryView">

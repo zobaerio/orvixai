@@ -1797,6 +1797,33 @@ class OrvixDesktop:
             )
         return self._hud_cc_objects
 
+    def _web_memory_store(self):
+        """The app's ONE MemoryStore, for the WebView home bridge
+        (Memory Center, Command Center Phase 5).
+
+        This is element 3 of the shared ORVIX state objects built
+        by ``_shared_orvix_state`` — the same store the Tk HUD
+        memory counts and the Brain/Chief path use — never a
+        second instance pointed at the same file. The cached
+        objects are preferred, exactly like ``_control_audit_log``:
+        the shared state is built lazily only when it does not
+        exist yet. Returns None when the store cannot be obtained,
+        so the bridge payload's memory block stays null instead of
+        raising or inventing entries.
+        """
+        objects = getattr(self, "_hud_cc_objects", None)
+        if objects is not None:
+            try:
+                store = objects[3]
+            except Exception:
+                store = None
+            if store is not None:
+                return store
+        try:
+            return self._shared_orvix_state()[3]
+        except Exception:
+            return None
+
     def _hud_control_center_snapshot(self) -> dict | None:
         """Real Control Center snapshot over the shared data dir (the
         same task queue / budget / audit files the CLI and Chief use).
@@ -3690,6 +3717,68 @@ class OrvixDesktop:
         settings are never touched.
         """
         store = getattr(self, "notification_store", None)
+        if store is None:
+            return
+        try:
+            store.clear()
+        except Exception:
+            pass
+
+    # -- Memory Center (Command Center Phase 5) ---------------------
+
+    def _forget_memory_from_web(self, entry_id) -> bool:
+        """Bridge entry point for the web Memory Center delete.
+
+        Runs on the Tk/event thread (the bridge only enqueues it),
+        like every other bridge write. ``MemoryStore.forget()`` is
+        keyed by the entry's key — its public API, unchanged — so
+        the entry id the page sends is resolved to its key through
+        the store's own list first; an identifier that matches no
+        entry id falls back to a direct key match, which covers
+        entries stored before ids existed (and a caller that
+        passed the key itself). Returns True only when an entry
+        was actually removed: an unknown identifier is an honest
+        no-op, never a claimed deletion. The web list refreshes
+        from the next state payload.
+        """
+        store = self._web_memory_store()
+        if store is None:
+            return False
+        ident = str(entry_id or "").strip()
+        if not ident:
+            return False
+        try:
+            entries = store.list()
+        except Exception:
+            return False
+        if not isinstance(entries, list):
+            return False
+        target_key = None
+        for entry in entries:
+            if isinstance(entry, dict) and str(entry.get("id") or "") == ident:
+                target_key = entry.get("key")
+                break
+        if target_key is None:
+            for entry in entries:
+                if isinstance(entry, dict) and str(entry.get("key") or "") == ident:
+                    target_key = entry.get("key")
+                    break
+        if not target_key:
+            return False
+        try:
+            return bool(store.forget(str(target_key)))
+        except Exception:
+            return False
+
+    def _clear_memory_from_web(self) -> None:
+        """Bridge entry point for the web Memory Center clear-all.
+
+        The web page already asked the user to confirm in its own
+        UI (the in-page confirm step), so no second desktop prompt
+        is shown. Only the memory entries are cleared — task
+        history, lessons and settings are never touched.
+        """
+        store = self._web_memory_store()
         if store is None:
             return
         try:

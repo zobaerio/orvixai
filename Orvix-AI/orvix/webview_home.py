@@ -43,6 +43,7 @@ from .home_data import (
 )
 from .settings import ENDPOINT_HEALTH_STATES
 from .hud_data import build_hud_panels, build_task_entries, task_current_step
+from .memory import CATEGORIES as MEMORY_CATEGORIES
 from .ui_formatters import format_message_time
 from .version import APP_NAME, APP_VERSION
 
@@ -233,6 +234,14 @@ MAX_PAYLOAD_ACTIVITY = 10
 # the latest 20 to the page, plus the store's TOTAL unread count
 # (which may exceed the number of unread items in those 20).
 MAX_PAYLOAD_NOTIFICATIONS = 20
+
+# How many memory entries the payload carries (Command Center
+# Phase 5). The store itself holds up to 500 entries; one push
+# sends only the latest 100 (newest first, grouped by category),
+# plus the TRUE per-category counts and total, which cover every
+# stored entry — so the page can honestly say "latest 100 of N"
+# instead of pretending the capped list is everything.
+MAX_PAYLOAD_MEMORY_ENTRIES = 100
 
 # The Tk activity panel's placeholder line before the first real
 # command: furniture, not an activity event, so it never reaches
@@ -473,6 +482,126 @@ def _notifications_payload(app):
     return {"items": items, "unreadCount": unread}
 
 
+def _resolve_memory_store(app):
+    """The app's MemoryStore for the payload / bridge, or None.
+
+    Sources, in order, all read defensively in the same style the
+    bridge already uses for optional app capabilities:
+
+    1. an app-provided accessor (``_web_memory_store`` — the real
+       desktop app supplies one over its shared ORVIX state
+       objects, so the store is the ONE instance the Brain/Chief
+       path and the Tk HUD counts use, never a second instance
+       pointed at the same file);
+    2. a plain ``memory_store`` attribute (minimal embeddings);
+    3. element 3 of the app's cached shared-state objects tuple
+       (``_hud_cc_objects``: queue, budget, audit, memory,
+       lessons — the same slot ``_hud_memory_counts`` reads).
+
+    A missing or unreadable store yields None: the payload block
+    is then null and the page renders its honest empty state.
+    Nothing here ever fabricates an entry, and no failure raises.
+    """
+    accessor = getattr(app, "_web_memory_store", None)
+    if callable(accessor):
+        try:
+            store = accessor()
+        except Exception:
+            store = None
+        if store is not None:
+            return store
+    store = getattr(app, "memory_store", None)
+    if store is not None:
+        return store
+    objects = getattr(app, "_hud_cc_objects", None)
+    if objects is not None:
+        try:
+            store = objects[3]
+        except Exception:
+            store = None
+        if store is not None:
+            return store
+    return None
+
+
+def _memory_entry_payload(entry) -> dict:
+    """JSON shape for one MemoryStore entry.
+
+    The store records ``id``, ``key``, ``value``, ``category`` and
+    ``updated_at`` (an epoch float — the store records no separate
+    created timestamp, so the field is honestly named
+    ``updatedAt``). ``text`` carries the entry's value: the text
+    that was remembered. A missing/invalid timestamp stays None —
+    no time is invented.
+    """
+    updated = entry.get("updated_at")
+    if isinstance(updated, bool) or not isinstance(updated, (int, float)):
+        updated = None
+    return {
+        "id": str(entry.get("id") or ""),
+        "key": str(entry.get("key") or ""),
+        "text": str(entry.get("value") or ""),
+        "category": str(entry.get("category") or "note"),
+        "updatedAt": updated,
+    }
+
+
+def _memory_payload(app, query=""):
+    """Memory Center block for the payload, or None.
+
+    Entries come from the app's MemoryStore (see
+    :func:`_resolve_memory_store`), grouped by category under
+    ``byCategory`` (the store's real categories — preference /
+    fact / strategy / note — always present, in that order, plus
+    any further category a stored entry actually carries), newest
+    first within each category, capped at
+    ``MAX_PAYLOAD_MEMORY_ENTRIES`` entries in total. ``counts``
+    and ``total`` are computed over the FULL (possibly
+    search-filtered) set before the cap, so they stay true even
+    when the entry lists are truncated.
+
+    When ``query`` is non-empty the block is the store's own
+    ``search()`` result for it (matching key or value) and the
+    query is echoed in the block, so the page renders exactly the
+    filter the bridge applied. An app with no readable store
+    yields None — never an exception, never an invented entry.
+    """
+    store = _resolve_memory_store(app)
+    if store is None:
+        return None
+    query = str(query or "").strip()
+    try:
+        if query:
+            raw = store.search(query)
+        else:
+            raw = store.list()
+    except Exception:
+        return None
+    if not isinstance(raw, list):
+        return None
+    entries = [_memory_entry_payload(row) for row in raw
+               if isinstance(row, dict)]
+    counts: dict = {category: 0 for category in MEMORY_CATEGORIES}
+    for entry in entries:
+        counts[entry["category"]] = counts.get(entry["category"], 0) + 1
+    total = len(entries)
+    # Newest first, capped: the store lists oldest first, so the
+    # latest entries are the tail of the full list.
+    latest = list(reversed(entries))[:MAX_PAYLOAD_MEMORY_ENTRIES]
+    by_category: dict = {category: [] for category in MEMORY_CATEGORIES}
+    for entry in latest:
+        by_category.setdefault(entry["category"], []).append(entry)
+    return {
+        "byCategory": by_category,
+        "counts": counts,
+        "total": total,
+        "shown": len(latest),
+        "truncated": total > len(latest),
+        "cap": MAX_PAYLOAD_MEMORY_ENTRIES,
+        "query": query,
+    }
+
+
 def _recent_task_records(app) -> list:
     """Newest-first TaskStore records from the app, or [] when the app
     has no readable task store. Any failure yields an empty list: the
@@ -584,13 +713,20 @@ def _top_processes_payload(stats) -> list:
     return result
 
 
-def build_state_payload(app, stats=None) -> dict:
+def build_state_payload(app, stats=None, memory_query=None) -> dict:
     """JSON-serializable snapshot of real app state for the web page.
 
     Attributes are read defensively (``getattr`` with defaults) so a
     minimal app-like object works. Stats come from
     :func:`orvix.home_data.collect_system_stats` unless a reading is
     supplied; unreadable stats stay ``None`` all the way to the page.
+
+    ``memory_query`` (Command Center Phase 5) is the Memory Center
+    search filter the page last requested through the bridge's
+    ``memorySearch`` method: when it is a non-empty string the
+    payload's memory block carries the store's search results for
+    it instead of the full latest entries. It is a view filter
+    only — it never changes what the store holds.
     """
     if stats is None:
         stats = collect_system_stats()
@@ -642,6 +778,14 @@ def build_state_payload(app, stats=None) -> dict:
         # readable store (the page then shows its honest empty
         # state instead of inventing notifications).
         "notifications": _notifications_payload(app),
+        # Command Center Phase 5 (additive): the Memory Center
+        # block — entries grouped by category (latest
+        # MAX_PAYLOAD_MEMORY_ENTRIES, newest first) with true
+        # per-category counts and total from the app's one
+        # MemoryStore, filtered by the bridge's current search
+        # query when one is set; None when the app has no readable
+        # store (the page then shows its honest empty state).
+        "memory": _memory_payload(app, query=memory_query or ""),
         "stats": {
             "cpu": stats.cpu_percent,
             "ram": stats.ram_percent,
@@ -721,6 +865,16 @@ class OrvixWebHomeApi:
 
     def __init__(self, app):
         self.app = app
+        # Memory Center search filter (Command Center Phase 5):
+        # the query the page last asked for via memorySearch. It
+        # lives on the API object — the same bridge-local state
+        # pattern as the portrait cache in getCharacterPortraits —
+        # and the push loop passes it to build_state_payload, so
+        # the NEXT state payload carries the filtered memory block
+        # and the page renders the search exactly like every other
+        # piece of live state: from the payload, never from a
+        # local-only copy.
+        self._memory_query = ""
 
     def _enqueue(self, method_name, args=()):
         callback = getattr(self.app, method_name)
@@ -874,6 +1028,60 @@ class OrvixWebHomeApi:
             # the payload's takeControl value on the next state push,
             # never from a local-only copy of this call.
             self._enqueue("_set_take_control_from_web", (bool(enabled),))
+            return {"ok": True}
+        except Exception as exc:
+            return {"ok": False, "error": type(exc).__name__}
+
+    def memorySearch(self, query=None):
+        try:
+            # Memory Center search (Command Center Phase 5). This
+            # follows the codebase's established pattern for live
+            # state: the search is a FILTER the page requests, and
+            # the next state payload reflects it (the push loop
+            # passes this query to build_state_payload, whose
+            # memory block then carries the store's own search()
+            # results). The one return-value read the bridge has —
+            # getCharacterPortraits — is a one-shot hand-off of
+            # static local files, not live state; memory IS live
+            # state (the Brain path can add entries while the page
+            # is open), so it stays on the payload path like the
+            # notifications, tasks and Take Control state. Nothing
+            # is enqueued and the store is never touched here: a
+            # filter is a view concern, not an app write.
+            self._memory_query = str(query or "").strip()
+            return {"ok": True, "query": self._memory_query}
+        except Exception as exc:
+            return {"ok": False, "error": type(exc).__name__}
+
+    def memoryForget(self, entry_id=None):
+        try:
+            # Delete ONE memory entry (Command Center Phase 5): a
+            # write, so it follows the same enqueue discipline as
+            # every other mutating bridge method — the store is
+            # only touched on the app's Tk/event thread by
+            # _forget_memory_from_web, which resolves the entry id
+            # the page sends to the key MemoryStore.forget() is
+            # keyed by. The page's list refreshes from the next
+            # state payload, which reflects the store's real state.
+            ident = str(entry_id or "").strip()
+            if not ident:
+                return {"ok": False, "error": "missing entry id"}
+            self._enqueue("_forget_memory_from_web", (ident,))
+            return {"ok": True}
+        except Exception as exc:
+            return {"ok": False, "error": type(exc).__name__}
+
+    def memoryClear(self):
+        try:
+            # Clear ALL memory entries (Command Center Phase 5).
+            # The web page has already asked the user to confirm in
+            # its own UI (the in-page confirm step), so the
+            # enqueued app method clears without a second desktop
+            # prompt. Only the memory entries are cleared — task
+            # history, lessons and settings are never touched. A
+            # write, so it is enqueued like every other mutating
+            # bridge method; nothing is cleared from this thread.
+            self._enqueue("_clear_memory_from_web", ())
             return {"ok": True}
         except Exception as exc:
             return {"ok": False, "error": type(exc).__name__}
@@ -1096,7 +1304,14 @@ class WebViewHome:
         if self.window is None:
             return
         try:
-            payload = build_state_payload(self.app)
+            # The Memory Center search filter the page last set via
+            # the bridge (Phase 5) rides along, so a search request
+            # is reflected in the very next payload the page renders
+            # from — and a forget/clear applied on the app thread is
+            # reflected the same way, still filtered.
+            payload = build_state_payload(
+                self.app,
+                memory_query=getattr(self.api, "_memory_query", ""))
             payload_json = json.dumps(payload)
         except Exception:
             return
@@ -1118,6 +1333,7 @@ __all__ = [
     "ACTION_COMMANDS",
     "MAX_MESSAGE_BUFFER",
     "MAX_PAYLOAD_ACTIVITY",
+    "MAX_PAYLOAD_MEMORY_ENTRIES",
     "MAX_PAYLOAD_NOTIFICATIONS",
     "MAX_PAYLOAD_TASKS",
     "OrvixWebHomeApi",

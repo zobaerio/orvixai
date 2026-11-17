@@ -397,3 +397,38 @@ body::after{background:radial-gradient(620px 380px at 16% -6%,rgba(0,140,255,.17
 .take-control-row .switch{flex:0 0 auto}
 .take-control-row .switch input:disabled+span{opacity:.45}
 .take-control-state{font-size:10px;font-weight:800;letter-spacing:.6px;color:#ff9d94;margin:10px 18px 0}
+
+/* ==========================================================================
+   Command Center Phase 5 — Memory Center: the Memory nav destination
+   with its search row, per-category sections, entry rows with delete
+   buttons, and the clear-all control with its in-page confirm step.
+   Everything is rendered by app.js from the bridge payload's memory
+   block only; disabled controls are the standalone not-connected
+   presentation.
+   ========================================================================== */
+.memory-search-row{display:flex;gap:8px;flex-wrap:wrap;margin-top:16px}
+.memory-search-row input{flex:1;min-width:200px;background:#061a30;border:1px solid #087cb5;border-radius:10px;padding:11px 13px;color:white;outline:none;font:13px Inter}
+.memory-search-row input:focus{border-color:var(--cyan);box-shadow:0 0 12px #00bfff55}
+.memory-search-button{border:1px solid #00dfff;background:linear-gradient(120deg,#007fce,#00bfe9);border-radius:10px;padding:11px 18px;font-weight:800;font-size:12px}
+.memory-search-clear{background:#082844;border:1px solid #1385b7;border-radius:10px;padding:11px 16px;color:var(--cyan);font-weight:800;font-size:12px}
+.memory-summary{font-size:12px;color:var(--cyan);font-weight:700;margin:14px 0 0}
+.memory-list{display:flex;flex-direction:column;gap:18px;margin-top:14px}
+.memory-category-heading{font-size:12px;font-weight:800;letter-spacing:1px;color:var(--cyan);margin:0 0 8px;text-transform:uppercase}
+.memory-category-empty,.memory-empty{font-size:12px;color:var(--muted);margin:4px 0 6px}
+.memory-entry{padding:11px 14px;border:1px solid #12628f;border-radius:12px;background:#08213b;margin-bottom:8px}
+.memory-entry-head{display:flex;align-items:center;gap:10px}
+.memory-entry-key{font-size:12px;color:#eaf6ff;overflow-wrap:anywhere}
+.memory-entry-time{margin-left:auto;flex:0 0 auto;font-size:10px;color:#7295b4;font-weight:700}
+.memory-delete-button{flex:0 0 auto;background:#3a1220;border:1px solid #b5443c;color:#ff9d94;border-radius:16px;padding:4px 12px;font-weight:800;font-size:10px}
+.memory-delete-button:hover:not(:disabled){background:#4a1828}
+.memory-delete-button:disabled{opacity:.45;cursor:not-allowed}
+.memory-entry-text{font-size:12px;line-height:1.55;color:#c8ddef;margin:6px 0 0;overflow-wrap:anywhere}
+.memory-clear-row{margin-top:20px;padding-top:16px;border-top:1px solid #0d3555}
+.memory-clear-button{background:#4a2430;border:1px solid #b5443c;color:#fecaca;border-radius:10px;padding:11px 18px;font-weight:800;font-size:12px}
+.memory-clear-button:hover:not(:disabled){background:#702b3b}
+.memory-clear-button:disabled{opacity:.45;cursor:not-allowed}
+.memory-clear-confirm{margin-top:12px;padding:11px 12px;border:1px solid #ff4d5e;border-radius:12px;background:#2a0d16}
+.memory-clear-confirm p{font-size:11px;line-height:1.5;color:#ffd7db;margin:0 0 10px}
+.memory-clear-confirm-actions{display:flex;gap:8px}
+.memory-clear-confirm-button{flex:1;padding:9px 8px;border:1px solid #ff4d5e;border-radius:9px;background:#991b1b;color:#fff;font-weight:800;font-size:11px}
+.memory-clear-cancel-button{flex:1;padding:9px 8px;border:1px solid #4b7899;border-radius:9px;background:#082844;color:#c8ddef;font-weight:800;font-size:11px}
