@@ -557,17 +557,46 @@ $$(".perf-window-button").forEach((button) => button.addEventListener("click", (
   renderPerformance(lastState);
 }));
 
+const ringTweens = new Map();
 function setRing(stat, value) {
   const ring = document.querySelector(`.ring[data-stat="${stat}"]`);
   if (!ring) return;
   const span = ring.querySelector("span");
   if (value == null) {
+    ringTweens.delete(stat);
     ring.style.setProperty("--value", 0);
     if (span) span.textContent = "—";
-  } else {
-    ring.style.setProperty("--value", value);
-    if (span) span.textContent = Math.round(value) + "%";
+    return;
   }
+  ring.style.setProperty("--value", value);
+  if (!span) return;
+  const target = Math.round(value);
+  // Animated number transition (Phase 13): the displayed percent
+  // eases to the newly pushed value instead of jumping. The ring's
+  // conic sweep animates alongside it via the registered --value
+  // custom property in the stylesheet. When motion is blocked the
+  // value is set instantly, exactly as before.
+  if (fxMotionBlocked()) {
+    ringTweens.delete(stat);
+    span.textContent = target + "%";
+    return;
+  }
+  const from = parseInt(span.textContent, 10);
+  if (isNaN(from) || from === target) {
+    span.textContent = target + "%";
+    return;
+  }
+  const tween = { from, target, start: performance.now() };
+  ringTweens.set(stat, tween);
+  const stepTween = (now) => {
+    if (ringTweens.get(stat) !== tween) return;
+    const t = Math.min(1, (now - tween.start) / 450);
+    const eased = 1 - Math.pow(1 - t, 3);
+    span.textContent = Math.round(tween.from + (tween.target - tween.from) * eased) + "%";
+    if (t < 1) requestAnimationFrame(stepTween);
+    else ringTweens.delete(stat);
+  };
+  requestAnimationFrame(stepTween);
 }
 
 // ---------------------------------------------------------------------------
@@ -2109,10 +2138,12 @@ renderPerf();
 tryConnect();
 
 // ---------------------------------------------------------------------------
-// Ambient FX (Phase 11, denser reactor field in Phase 12): two
-// lightweight canvas particle layers — a slow drift behind the whole
-// page and a denser field of motes inside the hero reactor, rising
-// slowly and twinkling. Pure decoration: no data is read or invented.
+// Ambient FX (Phase 11, denser reactor field in Phase 12, two-layer
+// depth + plasma arcs in Phase 13): two lightweight canvas particle
+// layers — a slow drift behind the whole page and a denser field of
+// motes inside the hero reactor, rising slowly and twinkling, with
+// short plasma arcs crackling between the reactor's inner rings.
+// Pure decoration: no data is read or invented.
 // One shared requestAnimationFrame loop drives both; it pauses while
 // the document is hidden and stops entirely while the Settings >
 // Appearance animations toggle is off (body.no-animations) or the OS
@@ -2143,15 +2174,20 @@ function fxSeed() {
     fx.cw = coreCanvas.width;
     fx.ch = coreCanvas.height;
     if (!fx.core.length) {
-      for (let i = 0; i < 46; i++) {
+      // Two layers (Phase 13): the near motes keep the Phase 12
+      // behaviour; the far motes are smaller, slower and dimmer,
+      // so the field reads with depth instead of as one flat dust.
+      for (let i = 0; i < 68; i++) {
+        const far = i >= 44;
         const a = Math.random() * Math.PI * 2;
         const rr = Math.sqrt(Math.random()) * 0.92;
         fx.core.push({ x: Math.cos(a) * rr, y: Math.sin(a) * rr,
-          vy: Math.random() * 0.3 + 0.15,
+          vy: far ? Math.random() * 0.16 + 0.07 : Math.random() * 0.3 + 0.15,
           sway: Math.random() * Math.PI * 2,
           tw: Math.random() * Math.PI * 2,
           ts: Math.random() * 1.6 + 0.6,
-          r: Math.random() * 1.7 + 0.5 });
+          r: far ? Math.random() * 0.8 + 0.3 : Math.random() * 1.7 + 0.5,
+          far });
       }
     }
   }
@@ -2183,17 +2219,60 @@ function fxDraw() {
       // Slow upward drift through the reactor disc; a mote that
       // leaves the top respawns along the bottom chord. Brightness
       // twinkles on its own phase, and a gentle sideways sway is
-      // applied at draw time so it never accumulates.
+      // applied at draw time so it never accumulates. Far-layer
+      // motes draw at reduced alpha (Phase 13 depth).
       p.y -= p.vy * 0.016;
       if (p.y < -0.95) { p.y = 0.9; p.x = (Math.random() * 2 - 1) * 0.8; }
       p.tw += p.ts * 0.016;
       const x = cx + (p.x + Math.sin(p.tw * 0.7 + p.sway) * 0.012) * maxOrbit;
       const y = cy + p.y * maxOrbit;
-      ctx.globalAlpha = 0.2 + 0.5 * (0.5 + 0.5 * Math.sin(p.tw));
+      ctx.globalAlpha = (0.2 + 0.5 * (0.5 + 0.5 * Math.sin(p.tw))) * (p.far ? 0.45 : 1);
       ctx.beginPath(); ctx.arc(x, y, p.r, 0, Math.PI * 2); ctx.fill();
     });
     ctx.globalAlpha = 1;
+    fxPlasma(ctx, cx, cy, maxOrbit, wrap.dataset.state);
   }
+}
+// Plasma arcs (Phase 13): short jagged energy arcs flickering
+// between the inner rings of the hero core, stroked with a
+// state-colour -> violet gradient. Regenerated every frame with
+// random gaps so they crackle rather than loop; busier states
+// (thinking / processing / executing / speaking) get more arcs at
+// higher alpha. Drawn only from the FX loop, so the animations
+// toggle and reduced-motion stop them with everything else.
+const FX_PLASMA_VIOLET = "#7c5cff";
+function fxPlasma(ctx, cx, cy, maxOrbit, state) {
+  const active = state === "thinking" || state === "processing"
+    || state === "executing" || state === "speaking";
+  const base = FX_STATE_COLORS[state] || FX_STATE_COLORS.idle;
+  const arcs = active ? 3 : 1;
+  for (let i = 0; i < arcs; i++) {
+    if (Math.random() < (active ? 0.25 : 0.55)) continue;
+    const r = maxOrbit * (0.52 + Math.random() * 0.3);
+    const a0 = Math.random() * Math.PI * 2;
+    const a1 = a0 + 0.5 + Math.random() * 0.9;
+    const grad = ctx.createLinearGradient(cx - r, cy - r, cx + r, cy + r);
+    grad.addColorStop(0, base);
+    grad.addColorStop(1, FX_PLASMA_VIOLET);
+    ctx.strokeStyle = grad;
+    ctx.globalAlpha = (active ? 0.5 : 0.28) + Math.random() * 0.3;
+    ctx.lineWidth = 1.2;
+    ctx.shadowColor = base;
+    ctx.shadowBlur = 6;
+    ctx.beginPath();
+    const steps = 9;
+    for (let s = 0; s <= steps; s++) {
+      const a = a0 + (a1 - a0) * (s / steps);
+      const jitter = (s === 0 || s === steps) ? 0
+        : (Math.random() - 0.5) * maxOrbit * 0.09;
+      const x = cx + Math.cos(a) * (r + jitter);
+      const y = cy + Math.sin(a) * (r + jitter);
+      if (s === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+    }
+    ctx.stroke();
+  }
+  ctx.shadowBlur = 0;
+  ctx.globalAlpha = 1;
 }
 function fxStep() {
   if (!fx.running) return;
