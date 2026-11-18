@@ -45,7 +45,7 @@ from .home_data import (
     model_status_lines,
     quick_action_tiles,
 )
-from .settings import ENDPOINT_HEALTH_STATES
+from .settings import ENDPOINT_HEALTH_STATES, effective_accent_preset
 from .providers import PROVIDERS, configured_providers
 from .character_theme import character_accent
 from .hud_data import build_hud_panels, build_task_entries, task_current_step
@@ -968,8 +968,14 @@ def build_state_payload(app, stats=None, memory_query=None,
     core_mode = str(raw_mode) if raw_mode is not None else ""
     wake_enabled = bool(getattr(app, "wake_enabled", False))
     selected = getattr(app, "selected_character", "luna")
+    # Probe-backed health (Phase 8a), read once: it feeds both the
+    # model block below and — since Phase 10 (Bugs #5) — the model
+    # panel's INTERNET status line, so the line shows the probe's
+    # actual verdict instead of a permanent "Not checked".
+    probe_health = _probe_health(app)
     lines = model_status_lines(
-        settings, core_mode=core_mode, wake_enabled=wake_enabled)
+        settings, core_mode=core_mode, wake_enabled=wake_enabled,
+        endpoint_health=probe_health)
     # None (not []) when the app has no readable task store, so the
     # Control Center assembly below falls back to the snapshot's
     # queue stats exactly like the Tk HUD; the tasks entries and the
@@ -988,7 +994,7 @@ def build_state_payload(app, stats=None, memory_query=None,
             # health states, or None before the app's probe has a
             # state to report. The page prefers a probe verdict
             # (reachable / unreachable) over endpointState.
-            "health": _probe_health(app),
+            "health": probe_health,
             "statusLines": [
                 {"label": line.label, "value": line.value, "state": line.state}
                 for line in lines
@@ -1097,6 +1103,14 @@ def build_state_payload(app, stats=None, memory_query=None,
         # animations/transitions run. Defaults to True (the previous
         # always-animated behaviour) when the key is absent.
         "webHomeAnimations": bool(settings.get("web_home_animations", True)),
+        # Command Center Phase 10 (additive): the Settings >
+        # Appearance accent preset, resolved through the settings
+        # layer (unknown/absent stored values resolve to the
+        # default shipped palette). The page's data-accent
+        # attribute selects the matching CSS brand tokens; the
+        # per-character ambient tint (data-character) is a separate
+        # layer and keeps working alongside it.
+        "accentPreset": effective_accent_preset(settings),
         "busy": bool(getattr(app, "_busy", False)),
     }
 

@@ -306,6 +306,42 @@ body::after{background:radial-gradient(620px 380px at 16% -6%,rgba(0,140,255,.17
 @media (prefers-reduced-motion: reduce){*,*::before,*::after{animation:none!important;transition:none!important}}
 
 /* ==========================================================================
+   Phase 13 (part 1 of 2) — visual richness: ambient depth + hero core.
+   The owner asked for richer colour and animation across the whole
+   UI after the Command Center phases; this part deepens the ambient
+   layers and the hero reactor, part 2 (end of file) covers every
+   other view. Everything here flows through the existing hooks:
+   the aurora fields reuse the Phase 8 --accent-rgb ambient tint,
+   the reactor layers reuse the bridge-driven data-state hues
+   (--state / --state-rgb), and all motion still stops under the
+   Phase 7 animations toggle and the reduced-motion media query.
+   ========================================================================== */
+
+/* Aurora intensified: a slower, grander drift of the main fields,
+   plus two extra colour-field layers (violet depth, a teal whisper,
+   an accent-tinted field) drifting on their own periods so the
+   background never repeats in an obvious loop. The character layer
+   still owns the base .aurora background itself; these pseudo
+   layers only add fields on top of it. */
+.aurora{filter:blur(34px);animation-duration:34s}
+.aurora::before,.aurora::after{content:"";position:absolute;inset:0;pointer-events:none}
+.aurora::before{background:radial-gradient(36% 30% at 68% 64%,rgba(124,92,255,.14),transparent 70%),radial-gradient(26% 22% at 12% 66%,rgba(45,212,191,.07),transparent 70%),radial-gradient(30% 26% at 88% 78%,rgba(var(--accent-rgb),.10),transparent 70%);animation:auroraDrift2 38s ease-in-out infinite alternate}
+.aurora::after{background:radial-gradient(24% 20% at 40% 12%,rgba(0,223,255,.10),transparent 70%),radial-gradient(34% 28% at 55% 95%,rgba(20,107,255,.13),transparent 70%);animation:auroraDrift 30s ease-in-out infinite alternate-reverse}
+@keyframes auroraDrift2{from{transform:translate3d(2%,1%,0) scale(1.04)}to{transform:translate3d(-2%,-2%,0) scale(1)}}
+
+/* Reactor bloom: a stronger halo inside the rings and a deeper
+   pooled glow around the whole core, and the light pool beneath
+   the core now pulses on the same 4.6s breathing period as the
+   halo and the centre mark, so the whole light source breathes
+   as one. The scanning sweep picks up a violet shoulder, so its
+   gradient runs state hue -> violet as it turns. */
+.reactor.halo{background:radial-gradient(circle,rgba(var(--state-rgb),.62),rgba(var(--state-rgb),.16) 55%,transparent 72%);filter:blur(11px)}
+.reactor-wrap::before{background:radial-gradient(circle,rgba(var(--state-rgb),.42) 0%,rgba(var(--state-rgb),.16) 42%,transparent 68%)}
+.reactor-wrap::after{animation:poolPulse 4.6s ease-in-out infinite alternate}
+@keyframes poolPulse{from{opacity:.7;transform:scaleX(.94)}to{opacity:1;transform:scaleX(1.05)}}
+.reactor.sweep{background:conic-gradient(from 0deg,rgba(var(--state-rgb),.34),rgba(124,92,255,.20) 11%,transparent 26%)}
+
+/* ==========================================================================
    Command Center Phase 1 — System Overview detail rows: network and
    disk-activity rates, battery, GPU / temperature (honest "N/A" on
    this stack), this app's own usage, and the per-drive usage list.
@@ -591,3 +627,181 @@ body::after{background:radial-gradient(620px 380px at 16% -6%,rgba(0,140,255,.17
 .secondary-card-action{margin-top:12px;background:#082844;border:1px solid #1385b7;border-radius:8px;padding:8px 16px;color:var(--cyan);font-size:11px;font-weight:800}
 .secondary-card-action:hover{background:#0a3b5e}
 @media(max-width:760px){.command-bar{flex-wrap:wrap}.command-bar-composer{order:3;flex-basis:100%}.command-stop-button{margin-left:auto}}
+
+/* ==========================================================================
+   Command Center Phase 10 — appearance accent presets + responsive
+   verification fixes.
+
+   Accent presets: the payload's accentPreset drives a data-accent
+   attribute on the page root (<html>); the rules below switch ONLY
+   the base brand tokens — --cyan / --primary / --secondary (the
+   design tokens the Phase 11/12 styles already consume) and the
+   --brand* tokens derived from the same values. The values mirror
+   orvix/settings.py ACCENT_PRESETS exactly (a unit test asserts
+   they never drift). The default preset (NEON_BLUE) is the shipped
+   palette, so existing users see no change until they pick one.
+
+   This is a SEPARATE layer from the Phase 8 per-character ambient
+   tint: data-character switches --accent / --accent-rgb (aurora,
+   panel edge tint, character-card accents); data-accent switches
+   the brand tokens and the brand surfaces below (brand mark, nav
+   active glow, clock label, composer mic/send). The two compose —
+   no rule here touches a surface the character layer owns, and
+   neither layer touches the core-state colours.
+   ========================================================================== */
+:root{--brand:#00DFFF;--brand-rgb:0,223,255;--brand-primary:#008CFF;--brand-primary-rgb:0,140,255;--brand-secondary:#146BFF;--brand-secondary-rgb:20,107,255}
+:root[data-accent="NEON_BLUE"]{--cyan:#00DFFF;--primary:#008CFF;--secondary:#146BFF;--brand:#00DFFF;--brand-rgb:0,223,255;--brand-primary:#008CFF;--brand-primary-rgb:0,140,255;--brand-secondary:#146BFF;--brand-secondary-rgb:20,107,255}
+:root[data-accent="EMERALD"]{--cyan:#00E88F;--primary:#00B578;--secondary:#0E9F6E;--brand:#00E88F;--brand-rgb:0,232,143;--brand-primary:#00B578;--brand-primary-rgb:0,181,120;--brand-secondary:#0E9F6E;--brand-secondary-rgb:14,159,110}
+:root[data-accent="VIOLET"]{--cyan:#A78BFA;--primary:#8B5CF6;--secondary:#6D28D9;--brand:#A78BFA;--brand-rgb:167,139,250;--brand-primary:#8B5CF6;--brand-primary-rgb:139,92,246;--brand-secondary:#6D28D9;--brand-secondary-rgb:109,40,217}
+:root[data-accent="AMBER"]{--cyan:#FFC46B;--primary:#FF8A00;--secondary:#F97316;--brand:#FFC46B;--brand-rgb:255,196,107;--brand-primary:#FF8A00;--brand-primary-rgb:255,138,0;--brand-secondary:#F97316;--brand-secondary-rgb:249,115,22}
+:root[data-accent] .brand-mark{border-color:var(--brand);text-shadow:0 0 12px var(--brand);box-shadow:0 0 20px rgba(var(--brand-rgb),.45),inset 0 0 16px rgba(var(--brand-rgb),.27)}
+:root[data-accent] .brand-copy small{color:var(--brand)}
+:root[data-accent] .clock small{color:var(--brand)}
+:root[data-accent] .nav-item.active{box-shadow:0 0 18px rgba(var(--brand-rgb),.45),inset 0 0 12px rgba(var(--brand-rgb),.18);text-shadow:0 0 9px rgba(var(--brand-rgb),.85)}
+:root[data-accent] .mic-button{border-color:var(--brand);box-shadow:0 0 16px rgba(var(--brand-rgb),.4)}
+:root[data-accent] .send-button{background:linear-gradient(120deg,var(--brand-primary),var(--brand));border-color:var(--brand);box-shadow:0 0 18px rgba(var(--brand-rgb),.35)}
+
+/* Responsive verification (Phase 10, four-size pass at 1920x1080,
+   1600x900, 1366x768, 1280x720): the top navigation grew to ten
+   destinations across Phases 5-9, but the top bar's breakpoints
+   were sized for six — its content measured ~1706px wide, so at
+   1600px and below the status pill, clock and top-right buttons
+   were pushed past the viewport edge (document scrollWidth 1706
+   at 1600/1366/1280). Fixes, inside the existing breakpoint
+   system: compact the top bar under 1750px, and under 1450px let
+   the nav scroll horizontally inside its own flex slot instead
+   of overflowing the page. At 720px-class heights the hero and
+   chat log shrink so the centre column is not crowded out. */
+@media(max-width:1750px){.topbar{gap:14px}.brand{min-width:212px}.brand-copy strong{font-size:24px}.nav-item{padding:10px 11px}.clock{min-width:104px}}
+@media(max-width:1450px){.main-nav{overflow-x:auto;overflow-y:hidden;scrollbar-width:thin;min-width:0}.nav-item{white-space:nowrap}}
+@media(max-height:800px){.hero{min-height:300px}.chat-log{max-height:180px}}
+
+/* ==========================================================================
+   Phase 13 (part 2 of 2) — visual richness across every view.
+   Part 1 (above the Command Center sections) deepened the ambient
+   layers and the hero core; this part carries the same grade to
+   the panels, cards, titles, charts and controls of all views, so
+   the whole app reads as one rich surface instead of a rich hero
+   surrounded by flat panels. The active accent preset stays the
+   primary hue driver: nearly every colour below is consumed from
+   the existing brand tokens, with a restrained violet family as
+   the secondary depth hue. Static richness (colour, gradients,
+   borders) never depends on motion; every animation here stops
+   under the same toggle and media query as the rest of the page.
+   ========================================================================== */
+:root{--violet:#7C5CFF;--violet-rgb:124,92,255}
+
+/* Deeper page grade: a brighter lit centre, a deeper falloff and a
+   whisper of violet at the very bottom edge. */
+body{background:radial-gradient(ellipse at 50% 30%,#0a3160 0,#051a38 42%,#020713 78%,#010309 100%)}
+
+/* Starfield: two static star maps (near + far) painted as box
+   shadows on two tiny dots, twinkling slowly in opacity only.
+   Pure CSS, so the layer is present even with motion blocked —
+   it simply stops twinkling. */
+.starfield{position:fixed;inset:0;z-index:0;pointer-events:none;overflow:hidden}
+.starfield::before,.starfield::after{content:"";position:absolute;top:0;left:0;border-radius:50%;background:transparent}
+.starfield::before{width:2px;height:2px;opacity:.55;animation:starTwinkle 5.5s ease-in-out infinite alternate;box-shadow:1797px 865px #cfeeff,1366px 752px #8fb8ff,1706px 607px #8fb8ff,1907px 695px #cfeeff,335px 966px #cfeeff,1681px 181px #8fb8ff,533px 736px #e6f6ff,953px 930px #8fb8ff,1036px 318px #9fd8ff,1033px 50px #cfeeff,664px 619px #e6f6ff,518px 253px #9fd8ff,1852px 452px #8fb8ff,222px 975px #e6f6ff,948px 333px #cfeeff,1636px 159px #e6f6ff,689px 690px #9fd8ff,60px 913px #e6f6ff,935px 958px #cfeeff,1265px 559px #9fd8ff,626px 780px #e6f6ff,931px 95px #cfeeff,450px 641px #e6f6ff,613px 909px #cfeeff,1053px 288px #e6f6ff,65px 657px #8fb8ff,231px 593px #e6f6ff,1528px 782px #9fd8ff,1216px 404px #cfeeff,515px 282px #8fb8ff,1138px 632px #9fd8ff,874px 806px #9fd8ff,1313px 894px #9fd8ff,1648px 348px #cfeeff,1546px 36px #9fd8ff,1123px 82px #8fb8ff,1263px 647px #8fb8ff,1070px 612px #cfeeff,1815px 299px #9fd8ff,1097px 487px #e6f6ff,337px 1037px #8fb8ff,339px 839px #9fd8ff}
+.starfield::after{width:1px;height:1px;opacity:.4;animation:starTwinkle 8.5s ease-in-out infinite alternate-reverse;box-shadow:1328px 575px #cfeeff,1132px 286px #9fd8ff,258px 1029px #e6f6ff,1705px 507px #9fd8ff,218px 829px #e6f6ff,824px 803px #8fb8ff,1664px 56px #e6f6ff,1847px 686px #9fd8ff,442px 21px #cfeeff,434px 409px #cfeeff,1083px 857px #8fb8ff,1616px 122px #8fb8ff,1855px 680px #e6f6ff,1060px 62px #e6f6ff,1443px 337px #cfeeff,1815px 372px #9fd8ff,1322px 507px #cfeeff,723px 492px #9fd8ff,526px 649px #e6f6ff,392px 494px #9fd8ff,670px 674px #8fb8ff,1582px 594px #9fd8ff,1352px 923px #8fb8ff,201px 49px #cfeeff,907px 378px #9fd8ff,1370px 17px #cfeeff,1111px 156px #e6f6ff,191px 164px #9fd8ff,1209px 756px #cfeeff,879px 756px #9fd8ff}
+@keyframes starTwinkle{from{opacity:.26}to{opacity:.62}}
+
+/* Top navigation sheen: a soft band of light crosses the bar on a
+   slow cycle and rests between passes. */
+.topbar{position:relative}
+.topbar::after{content:"";position:absolute;inset:0;pointer-events:none;background:linear-gradient(105deg,transparent 40%,rgba(165,228,255,.10) 50%,transparent 60%);background-size:260% 100%;background-position:140% 0;animation:navSheen 9.5s ease-in-out infinite}
+@keyframes navSheen{0%{background-position:140% 0}55%,100%{background-position:-60% 0}}
+
+/* Gradient brand wordmark and hero title: the hero gradient gains
+   a violet end-stop, and the top-bar wordmark joins it. */
+.brand-copy strong{background:linear-gradient(92deg,#ffffff 8%,var(--cyan) 58%,#7C5CFF 112%);-webkit-background-clip:text;background-clip:text;color:transparent}
+.hero h1{background:linear-gradient(100deg,#a5f8ff 0%,#00DFFF 30%,#008CFF 60%,#7C5CFF 102%);-webkit-background-clip:text;background-clip:text}
+
+/* Gradient section titles on every view, with the heading glyphs
+   becoming small gradient chips. Title text runs pale -> brand ->
+   violet so it stays readable at small sizes; glyphs keep their
+   own colours inside the chip. */
+.panel-heading h2{background:linear-gradient(92deg,#f4fbff 5%,var(--cyan) 58%,rgba(var(--violet-rgb),.95) 108%);-webkit-background-clip:text;background-clip:text;color:transparent}
+.core-card h3,.memory-category-heading,.perf-processes-heading,.models-endpoint h3{background:linear-gradient(92deg,#eaf7ff,var(--cyan));-webkit-background-clip:text;background-clip:text;color:transparent}
+.heading-icon{display:inline-grid;place-items:center;width:30px;height:30px;margin-right:9px;border-radius:9px;font-size:15px;vertical-align:-8px;background:linear-gradient(150deg,rgba(var(--brand-primary-rgb),.38),rgba(var(--violet-rgb),.24));border:1px solid rgba(var(--brand-rgb),.5);box-shadow:0 0 12px rgba(var(--brand-rgb),.28),inset 0 1px 0 rgba(200,240,255,.35);color:#dff6ff;text-shadow:0 0 8px rgba(var(--brand-rgb),.8)}
+
+/* Panel top-accent line, keyed to each panel's category hue. The
+   hero and the default panels take the active brand hue; the
+   emergency panel keeps its warning red. */
+.panel{--panel-accent:rgba(var(--brand-rgb),.8)}
+.panel::after{content:"";position:absolute;top:0;left:20px;right:20px;height:2px;border-radius:0 0 3px 3px;background:linear-gradient(90deg,transparent,var(--panel-accent),transparent);box-shadow:0 0 10px var(--panel-accent);opacity:.85;pointer-events:none}
+.system-panel{--panel-accent:rgba(0,223,255,.85)}
+.character-panel{--panel-accent:rgba(167,139,250,.85)}
+.voice-panel{--panel-accent:rgba(0,232,143,.8)}
+.hero{--panel-accent:rgba(var(--brand-rgb),.95)}
+.diagnostics-panel{--panel-accent:rgba(56,189,248,.85)}
+.quick-panel{--panel-accent:rgba(255,176,32,.8)}
+.home-tasks-panel{--panel-accent:rgba(56,189,248,.8)}
+.activity-panel{--panel-accent:rgba(45,212,191,.8)}
+.model-panel{--panel-accent:rgba(167,139,250,.85)}
+.performance-panel{--panel-accent:rgba(0,232,143,.8)}
+.emergency-panel{--panel-accent:rgba(255,77,94,.9)}
+
+/* The hero panel breathes light: its outer glow swells slowly
+   between brand blue and a violet-tinged bloom. */
+.hero{animation:heroGlowPulse 7s ease-in-out infinite alternate}
+@keyframes heroGlowPulse{from{box-shadow:0 22px 48px rgba(0,4,12,.6),0 0 30px rgba(0,140,255,.20),inset 0 0 34px rgba(0,140,255,.08)}to{box-shadow:0 22px 48px rgba(0,4,12,.6),0 0 52px rgba(0,170,255,.34),0 0 90px rgba(var(--violet-rgb),.16),inset 0 0 44px rgba(0,140,255,.12)}}
+
+/* Card surfaces in every view share the home panels' richness: a
+   deep two-stop gradient fill and a brand-tinted edge, with a
+   hover lift and brightening on the interactive ones. */
+.secondary-card,.provider-card,.perf-chart-card,.core-card,.task-row,.memory-entry,.home-task-row,.activity-row,.notification-item,.drive-row,.character,.quick-action{background-image:linear-gradient(160deg,rgba(14,44,76,.88),rgba(5,17,33,.94));border-color:rgba(var(--brand-rgb),.38)}
+.secondary-card,.provider-card,.perf-chart-card,.core-card,.task-row,.memory-entry,.home-task-row{transition:transform .3s ease,box-shadow .3s ease,border-color .3s ease}
+.secondary-card:hover,.provider-card:hover,.perf-chart-card:hover,.core-card:hover,.task-row:hover,.memory-entry:hover,.home-task-row:hover{transform:translateY(-3px);border-color:rgba(var(--brand-rgb),.75);box-shadow:0 14px 30px rgba(0,4,12,.5),0 0 20px rgba(var(--brand-rgb),.22)}
+.windows-info,.system-details,.current-operation,.perf-details,.models-endpoint{background-image:linear-gradient(160deg,rgba(12,42,72,.78),rgba(4,15,30,.88));border-color:rgba(var(--brand-rgb),.4)}
+.core-state-row.live{box-shadow:0 0 18px -2px var(--row-accent),inset 0 0 14px rgba(0,10,24,.35)}
+.message{padding:11px 13px;margin-bottom:10px;border:1px solid rgba(var(--brand-rgb),.16);border-radius:12px;background:linear-gradient(160deg,rgba(12,40,70,.45),rgba(5,17,33,.3))}
+
+/* View-enter motion: a view fades and rises as it becomes visible,
+   and the panels inside it stagger in. Replays on every switch
+   because the hidden views are display:none. */
+@keyframes viewIn{from{opacity:0;transform:translateY(12px)}to{opacity:1;transform:translateY(0)}}
+@keyframes panelIn{from{opacity:0;transform:translateY(14px)}to{opacity:1;transform:translateY(0)}}
+.dashboard:not(.hidden),.secondary-view:not(.hidden),.notifications-panel:not(.hidden){animation:viewIn .45s ease both}
+.dashboard:not(.hidden) .panel:not(.hero){animation:panelIn .55s ease both}
+.dashboard .left-column .panel:nth-child(2),.dashboard .center-column .panel:nth-child(2),.dashboard .right-column .panel:nth-child(2){animation-delay:.06s}
+.dashboard .left-column .panel:nth-child(3),.dashboard .center-column .panel:nth-child(3),.dashboard .right-column .panel:nth-child(3){animation-delay:.12s}
+.dashboard .right-column .panel:nth-child(4){animation-delay:.18s}
+.dashboard .right-column .panel:nth-child(5){animation-delay:.24s}
+.dashboard .right-column .panel:nth-child(6){animation-delay:.3s}
+.secondary-cards .secondary-card,.provider-grid .provider-card,.core-grid .core-card,.perf-charts-grid .perf-chart-card{animation:panelIn .5s ease both}
+.secondary-cards .secondary-card:nth-child(2),.provider-grid .provider-card:nth-child(2),.core-grid .core-card:nth-child(2),.perf-charts-grid .perf-chart-card:nth-child(2){animation-delay:.05s}
+.secondary-cards .secondary-card:nth-child(3),.provider-grid .provider-card:nth-child(3),.core-grid .core-card:nth-child(3),.perf-charts-grid .perf-chart-card:nth-child(3){animation-delay:.1s}
+.secondary-cards .secondary-card:nth-child(4),.provider-grid .provider-card:nth-child(4),.perf-charts-grid .perf-chart-card:nth-child(4){animation-delay:.15s}
+.secondary-cards .secondary-card:nth-child(5),.provider-grid .provider-card:nth-child(5){animation-delay:.2s}
+.secondary-cards .secondary-card:nth-child(6),.provider-grid .provider-card:nth-child(6){animation-delay:.25s}
+
+/* Gauges, bars and charts: the gauge sweep runs brand hue into
+   violet across the filled arc and animates between pushed values
+   (the custom property is registered so the conic sweep can
+   transition); progress fills and chart bars take gradient fills
+   with soft glows. */
+@property --value{syntax:"<number>";inherits:false;initial-value:0}
+.ring{transition:--value .7s ease;background:conic-gradient(from 200deg,var(--ring-color) 0deg,#7C5CFF calc(var(--value)*1%),#193a5a calc(var(--value)*1%))}
+.task-progress-fill{background:linear-gradient(90deg,var(--brand-primary),var(--cyan) 55%,#7C5CFF);box-shadow:0 0 10px rgba(var(--brand-rgb),.6);transition:width .55s ease}
+.performance-chart span .cpu-bar{background:linear-gradient(0deg,var(--brand-primary),var(--cyan) 55%,#b9f4ff);box-shadow:0 0 10px rgba(var(--brand-rgb),.65)}
+.performance-chart span .ram-bar{background:linear-gradient(0deg,rgba(109,40,217,.34),rgba(var(--violet-rgb),.68))}
+.perf-dot.ram{background:#7C5CFF;box-shadow:0 0 7px rgba(var(--violet-rgb),.7)}
+
+/* Button shine sweep: a light band crosses the primary buttons on
+   hover. The mic button pulses in the listening green while the
+   browser recogniser is live (the class comes from app.js). */
+.send-button,.memory-search-button,.memory-search-clear,.outline-button,.secondary-card-action,.provider-test-button{position:relative;overflow:hidden}
+.send-button::after,.memory-search-button::after,.memory-search-clear::after,.outline-button::after,.secondary-card-action::after,.provider-test-button::after{content:"";position:absolute;inset:0;background:linear-gradient(115deg,transparent 32%,rgba(255,255,255,.32) 50%,transparent 68%);transform:translateX(-130%);transition:transform .65s ease;pointer-events:none}
+.send-button:hover::after,.memory-search-button:hover::after,.memory-search-clear:hover::after,.outline-button:hover::after,.secondary-card-action:hover::after,.provider-test-button:hover::after{transform:translateX(130%)}
+.mic-button.listening{border-color:#00E88F;color:#a7ffd9;animation:micPulse 1.15s ease-in-out infinite}
+@keyframes micPulse{0%{box-shadow:0 0 0 0 rgba(0,232,143,.55),0 0 18px rgba(0,232,143,.5)}70%{box-shadow:0 0 0 16px rgba(0,232,143,0),0 0 26px rgba(0,232,143,.65)}100%{box-shadow:0 0 0 0 rgba(0,232,143,0),0 0 18px rgba(0,232,143,.5)}}
+
+/* Small surfaces: gradient voice wave, gradient switch track,
+   glowing quick-action glyphs, brand-tinted scrollbars. */
+.voice-wave span{background:linear-gradient(180deg,#8ff4ff,var(--primary));box-shadow:0 0 9px rgba(var(--brand-rgb),.75)}
+.switch input:checked+span{background:linear-gradient(120deg,var(--brand-primary),var(--brand))}
+.app-icon{filter:drop-shadow(0 0 6px rgba(var(--brand-rgb),.35))}
+*{scrollbar-width:thin;scrollbar-color:rgba(var(--brand-rgb),.4) rgba(4,13,26,.4)}
+::-webkit-scrollbar{width:9px;height:9px}
+::-webkit-scrollbar-thumb{background:linear-gradient(180deg,rgba(var(--brand-rgb),.55),rgba(var(--violet-rgb),.45));border-radius:6px}
+::-webkit-scrollbar-track{background:rgba(4,13,26,.35)}

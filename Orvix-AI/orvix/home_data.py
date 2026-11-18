@@ -728,13 +728,32 @@ def _tts_ready(module_available) -> bool:
         return False
 
 
+#: INTERNET status line per endpoint-probe verdict (Command Center
+#: Phase 10, audit Bugs #5). The keys are the probe's own health
+#: states (orvix.settings ENDPOINT_HEALTH_STATES); each value is
+#: (display text, line state) in ModelStatusLine terms. Before
+#: Phase 10 the INTERNET line was permanently "Not checked" even
+#: though the Phase 8a probe's verdict was already available.
+_INTERNET_BY_HEALTH = {
+    "reachable": ("Reachable", True),
+    "unreachable": ("Unreachable", False),
+    "checking": ("Checking", None),
+    "not_configured": ("Not configured", False),
+}
+
+
 def model_status_lines(settings: dict, *, core_mode: str,
-                       wake_enabled: bool, module_available=None) -> tuple[ModelStatusLine, ...]:
+                       wake_enabled: bool, module_available=None,
+                       endpoint_health: str | None = None) -> tuple[ModelStatusLine, ...]:
     """Status lines for the AI Model Status panel, from real state.
 
-    - INTERNET: the home page never probes the network, so this is
-      honestly 'Not checked' — the endpoint line below carries what is
-      actually known (local vs remote configuration).
+    - INTERNET: the endpoint probe's actual reachability verdict
+      when the caller supplies one (``endpoint_health``, one of the
+      orvix.settings health states — reachable / unreachable /
+      checking / not_configured, in the probe's own vocabulary).
+      With no probe verdict supplied (None or unrecognised) the
+      line stays honestly 'Not checked': no probe has run in that
+      context, so no verdict may be claimed.
     - AI CORE: the live core mode string from the app's state bridge.
     - VOICE: the real wake-word flag.
     - TTS: module presence for the engines SpeechEngine really uses.
@@ -764,9 +783,12 @@ def model_status_lines(settings: dict, *, core_mode: str,
 
     mode = " ".join(str(core_mode or "").split()).upper() or "READY"
     tts_ok = _tts_ready(module_available)
+    internet_value, internet_state = _INTERNET_BY_HEALTH.get(
+        str(endpoint_health or "").strip().lower(),
+        ("Not checked", None))
     return (
         ModelStatusLine("ENDPOINT", endpoint_value, endpoint_state),
-        ModelStatusLine("INTERNET", "Not checked", None),
+        ModelStatusLine("INTERNET", internet_value, internet_state),
         ModelStatusLine("AI CORE", mode, True),
         ModelStatusLine("VOICE", f"Wake word {'ON' if wake_enabled else 'OFF'}",
                         True if wake_enabled else None),

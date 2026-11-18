@@ -125,7 +125,104 @@ DEFAULTS: dict[str, Any] = {
     # and transitions exactly as before; False is carried in the
     # bridge state payload and the page disables them.
     "web_home_animations": True,
+    # Accent preset (Command Center Phase 10, Settings >
+    # Appearance): one of ACCENT_PRESETS below. The default is the
+    # palette the app has always shipped, so existing users see no
+    # visual change until they pick a different preset. Validated
+    # by validate_accent_preset; resolved for consumers by
+    # effective_accent_preset, which never raises (unknown stored
+    # values fall back to the default).
+    "accent_preset": "neon_blue",
 }
+
+# Accent presets (Command Center Phase 10): curated brand-accent
+# palettes for the web home's base brand layer (the --cyan /
+# --primary / --secondary design tokens and the --brand* tokens
+# derived from them) and for the scoped Tk accent surfaces. Each
+# preset is three hex colours: "accent" (the bright highlight),
+# "primary" and "secondary". The web stylesheet mirrors these
+# exact values in its [data-accent="..."] rules; a unit test
+# asserts the two never drift apart.
+#
+# This is a SEPARATE layer from the per-character ambient tint
+# (orvix/character_theme.py): the preset drives the base brand
+# accents, the character tint drives the ambient layer, and the
+# core-state colours are untouched by both.
+ACCENT_PRESET_DEFAULT = "neon_blue"
+
+ACCENT_PRESETS: dict[str, dict[str, str]] = {
+    # The shipped palette — the default, so nothing changes for
+    # existing users until they pick another preset.
+    "neon_blue": {
+        "label": "Neon Blue (default)",
+        "accent": "#00dfff",
+        "primary": "#008cff",
+        "secondary": "#146bff",
+    },
+    "emerald": {
+        "label": "Emerald",
+        "accent": "#00e88f",
+        "primary": "#00b578",
+        "secondary": "#0e9f6e",
+    },
+    "violet": {
+        "label": "Violet",
+        "accent": "#a78bfa",
+        "primary": "#8b5cf6",
+        "secondary": "#6d28d9",
+    },
+    "amber": {
+        "label": "Amber",
+        "accent": "#ffc46b",
+        "primary": "#ff8a00",
+        "secondary": "#f97316",
+    },
+}
+
+
+def validate_accent_preset(value) -> str:
+    """Validate an accent-preset key against ACCENT_PRESETS.
+
+    Accepts only the exact preset keys the Settings picker offers
+    (case-insensitive, surrounding whitespace ignored) and returns
+    the normalised key. Anything else raises ValueError, in the
+    style of validate_voice_id.
+    """
+    key = str(value or "").strip().lower()
+    if key not in ACCENT_PRESETS:
+        raise ValueError(
+            "Accent preset must be one of: "
+            + ", ".join(sorted(ACCENT_PRESETS)) + "."
+        )
+    return key
+
+
+def effective_accent_preset(settings: dict[str, Any] | None) -> str:
+    """The accent-preset key a consumer should use; never raises.
+
+    The stored value wins when it is a known preset; a missing or
+    unknown stored value falls back to ACCENT_PRESET_DEFAULT —
+    existing saved settings predate this key and hand-edited
+    values must keep working with the shipped palette.
+    """
+    data = settings if isinstance(settings, dict) else {}
+    try:
+        return validate_accent_preset(data.get("accent_preset", ACCENT_PRESET_DEFAULT))
+    except ValueError:
+        return ACCENT_PRESET_DEFAULT
+
+
+def accent_preset_colors(preset=None) -> dict[str, str]:
+    """The colour dict for a preset key (None/invalid -> default).
+
+    Returns a copy of the ACCENT_PRESETS entry (label, accent,
+    primary, secondary) so callers can never mutate the table.
+    """
+    try:
+        key = validate_accent_preset(preset)
+    except ValueError:
+        key = ACCENT_PRESET_DEFAULT
+    return dict(ACCENT_PRESETS[key])
 
 # The spoken-reply voice identifiers offered by the Settings voice
 # combos — the single source for the global Voice-tab combo and the

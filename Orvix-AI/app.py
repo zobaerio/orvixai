@@ -16,7 +16,7 @@ from typing import Callable
 
 from orvix.agent import OrvixAgent
 from orvix.task_planner import classify_plan_step_kind, format_plan_guidance, generate_task_plan, should_generate_task_plan
-from orvix.settings import ENDPOINT_HEALTH_INTERVAL_SECONDS, VOICE_IDS, advance_endpoint_health, auto_configure_from_api_key, effective_voice, endpoint_is_configured, fetch_model_list, get_api_key, initial_endpoint_health, load_settings, probe_endpoint_health, save_settings, set_api_key, test_api_connection, validate_api_base_url, validate_api_key_transport, validate_max_response_tokens, validate_speech_rate, validate_speech_volume, validate_temperature, validate_voice_id, validate_wake_phrase
+from orvix.settings import ACCENT_PRESETS, ENDPOINT_HEALTH_INTERVAL_SECONDS, VOICE_IDS, accent_preset_colors, advance_endpoint_health, auto_configure_from_api_key, effective_accent_preset, effective_voice, endpoint_is_configured, fetch_model_list, get_api_key, initial_endpoint_health, load_settings, probe_endpoint_health, save_settings, set_api_key, test_api_connection, validate_accent_preset, validate_api_base_url, validate_api_key_transport, validate_max_response_tokens, validate_speech_rate, validate_speech_volume, validate_temperature, validate_voice_id, validate_wake_phrase
 from orvix.providers import PROVIDERS as _PROVIDER_SPECS, ProviderClient as _ProviderClient
 from orvix.speech import SpeechEngine, match_wake_phrase
 from orvix.core_states import CoreState
@@ -89,6 +89,17 @@ class OrvixDesktop:
         except tk.TclError:
             self.brand_logo_photo = None
         self.settings = load_settings()
+        # Accent preset (Command Center Phase 10): the preset's
+        # bright accent, resolved from the persisted setting. Tk
+        # application is deliberately SCOPED: the constant ACCENT
+        # drives dozens of already-built widget styles, so the
+        # preset recolours only the AI-model panel's accent
+        # surfaces (the status dot and its Configure button, built
+        # below and refreshed on Settings save) plus the web home's
+        # brand layer via the bridge payload. A full Tk recolour
+        # would need every widget rebuilt and is not attempted.
+        self.accent_color = accent_preset_colors(
+            effective_accent_preset(self.settings))["accent"]
         self.speech = SpeechEngine()
         self.events: queue.Queue = queue.Queue()
         # Timestamped activity feed for the WebView home (Command
@@ -1257,7 +1268,7 @@ class OrvixDesktop:
         llm_panel = self._panel(right)
         llm_panel.pack(fill="x", pady=(0, 9))
         self._panel_title(llm_panel, "AI model status")
-        self.ai_dot = tk.Label(llm_panel, text="● CONFIGURED ENDPOINT", bg=PANEL, fg=ACCENT,
+        self.ai_dot = tk.Label(llm_panel, text="● CONFIGURED ENDPOINT", bg=PANEL, fg=self.accent_color,
                                font=("Segoe UI", 8, "bold"))
         self.ai_dot.pack(anchor="w", padx=13, pady=(0, 4))
         self.llm_detail_label = tk.Label(llm_panel, text=f"{self.settings.get('model', 'qwen2.5:3b')}\n{self.settings.get('api_base_url', '')}",
@@ -1265,8 +1276,8 @@ class OrvixDesktop:
         self.llm_detail_label.pack(anchor="w", padx=13, pady=(0, 7))
         # Status lines assembled by orvix.home_data.model_status_lines
         # from real state only (endpoint configuration, live core mode,
-        # wake-word flag, installed TTS engines; internet is honestly
-        # "Not checked" — the home page never probes the network).
+        # wake-word flag, installed TTS engines; the INTERNET line
+        # carries the endpoint probe's verdict — Phase 10, Bugs #5).
         # Refreshed together with the HUD panels.
         self.model_line_labels: dict[str, tk.Label] = {}
         self.model_dot_labels: dict[str, tk.Label] = {}
@@ -1283,10 +1294,11 @@ class OrvixDesktop:
             value.pack(side="left")
             self.model_line_labels[line_key] = value
             self.model_dot_labels[line_key] = dot
-        tk.Button(llm_panel, text="CONFIGURE AI MODEL  →", command=self._open_settings,
-                  bg="#13344a", fg=ACCENT, activebackground="#1d4d67", activeforeground=TEXT,
+        self.configure_model_button = tk.Button(llm_panel, text="CONFIGURE AI MODEL  →", command=self._open_settings,
+                  bg="#13344a", fg=self.accent_color, activebackground="#1d4d67", activeforeground=TEXT,
                   relief="flat", bd=0, font=("Segoe UI", 8, "bold"), padx=10, pady=9,
-                  cursor="hand2").pack(fill="x", padx=11, pady=(0, 12))
+                  cursor="hand2")
+        self.configure_model_button.pack(fill="x", padx=11, pady=(0, 12))
         tk.Button(llm_panel, text="RUN SYSTEM HEALTH CHECK  ↗", command=self._open_system_health,
                   bg="#102538", fg="#a8bacd", activebackground="#19405a", activeforeground=TEXT,
                   relief="flat", bd=0, font=("Segoe UI", 8, "bold"), padx=10, pady=8,
@@ -1962,7 +1974,8 @@ class OrvixDesktop:
                 for line in model_status_lines(
                         self.settings,
                         core_mode=getattr(self, "core_mode", "READY"),
-                        wake_enabled=bool(getattr(self, "wake_enabled", False))):
+                        wake_enabled=bool(getattr(self, "wake_enabled", False)),
+                        endpoint_health=getattr(self, "_endpoint_health_state", None)):
                     value_label = self.model_line_labels.get(line.label)
                     if value_label is not None:
                         value_label.configure(text=line.value)
@@ -4657,7 +4670,7 @@ class OrvixDesktop:
                     self.llm_detail_label.configure(
                         text=f"{new_settings.get('model', '')}\\n{new_settings.get('api_base_url', '')}"
                     )
-                self.ai_dot.configure(text="● CONFIGURED ENDPOINT", fg=ACCENT)
+                self.ai_dot.configure(text="● CONFIGURED ENDPOINT", fg=self.accent_color)
                 auto_setup_status.configure(
                     text=f"Detected {result['provider']} · selected {result['model']} · API key and model settings saved automatically.",
                     fg=GREEN,
@@ -4889,6 +4902,16 @@ class OrvixDesktop:
             character_voice_vars[char_key] = char_voice_var
             ttk.Combobox(character_tab, textvariable=char_voice_var, state="readonly", values=list(VOICE_IDS)).pack(fill="x")
 
+        # -- Appearance tab: accent preset picker (Phase 10) -------
+        tk.Label(appearance_tab, text="Accent preset", bg=BG, fg="#cbd7e8", font=("Segoe UI Semibold", 9)).pack(anchor="w", pady=(2, 5))
+        accent_preset_var = tk.StringVar(value=effective_accent_preset(self.settings))
+        ttk.Combobox(appearance_tab, textvariable=accent_preset_var, state="readonly", values=list(ACCENT_PRESETS)).pack(fill="x")
+        tk.Label(
+            appearance_tab,
+            text="Presets: neon_blue = Neon Blue (default, the shipped palette), emerald, violet, amber. The preset recolours the web home's brand accents and the desktop AI-model panel accent. The per-character ambient tint is a separate layer and keeps working. Takes effect on the web home at its next state update; the desktop panel accent updates when Settings are saved.",
+            bg=BG, fg=MUTED, font=("Segoe UI", 8), wraplength=540, justify="left",
+        ).pack(fill="x", pady=(4, 8))
+
         # -- Appearance tab: web-home animations toggle (Phase 7) ----
         animations_var = tk.BooleanVar(value=bool(self.settings.get("web_home_animations", True)))
         tk.Checkbutton(
@@ -5011,7 +5034,9 @@ class OrvixDesktop:
             new["character_voice_ruby"] = character_voice_vars["ruby"].get()
             new["character_voice_maya"] = character_voice_vars["maya"].get()
             new["web_home_animations"] = bool(animations_var.get())
+            new["accent_preset"] = accent_preset_var.get()
             try:
+                new["accent_preset"] = validate_accent_preset(new["accent_preset"])
                 new["temperature"] = validate_temperature(temperature_var.get())
                 new["max_response_tokens"] = validate_max_response_tokens(max_tokens_var.get())
                 new["speech_rate"] = validate_speech_rate(rate_var.get())
@@ -5040,7 +5065,13 @@ class OrvixDesktop:
             self.model_status.configure(text=self._model_status_text())
             if hasattr(self, "llm_detail_label"):
                 self.llm_detail_label.configure(text=f"{new.get('model', '')}\n{new.get('api_base_url', '')}")
-            self.ai_dot.configure(text="● CONFIGURED ENDPOINT", fg=ACCENT)
+            # Accent preset (Phase 10): refresh the scoped Tk accent
+            # surfaces from the just-saved preset.
+            self.accent_color = accent_preset_colors(
+                effective_accent_preset(new))["accent"]
+            if hasattr(self, "configure_model_button"):
+                self.configure_model_button.configure(fg=self.accent_color)
+            self.ai_dot.configure(text="● CONFIGURED ENDPOINT", fg=self.accent_color)
             win.destroy()
             if not key_saved and key_var.get().strip():
                 messagebox.showwarning("API key storage", "Windows Credential Manager could not store the API key. Use a supported keyring backend or a local Ollama endpoint.", parent=self.root)
